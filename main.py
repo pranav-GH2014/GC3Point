@@ -188,6 +188,24 @@ class NiftyTradingBot:
             except Exception as e:
                 logger.error("Failed to fetch NFO instruments from Kite: %s", e)
 
+        # 5b. Preload Historical 1m & 3m Candles for Chart Visualizer & Structure Engine
+        if not self.config.simulation_mode:
+            try:
+                today = datetime.now()
+                from_date = (today - timedelta(days=4)).strftime("%Y-%m-%d 09:15:00")
+                to_date = today.strftime("%Y-%m-%d %H:%M:%S")
+                c1 = self.kite_client.get_historical_data(self.config.underlying_token, from_date, to_date, "minute")
+                c3 = self.kite_client.get_historical_data(self.config.underlying_token, from_date, to_date, "3minute")
+                if c1:
+                    self.nifty_aggregator.load_historical_candles("1m", c1)
+                    self.latest_nifty_spot = float(c1[-1]["close"])
+                    logger.info("Preloaded %d 1m historical candles for NIFTY spot (Latest: %.2f)", len(c1), self.latest_nifty_spot)
+                if c3:
+                    self.nifty_aggregator.load_historical_candles("3m", c3)
+                    logger.info("Preloaded %d 3m historical candles for NIFTY structure", len(c3))
+            except Exception as e:
+                logger.warning("Could not preload historical candles from Kite: %s", e)
+
         # 6. Start WebSocket Feed
         self.ws_feed = RobustWebSocketFeed(self.config, on_tick_callback=self._on_ticks_received)
         tokens_to_subscribe = [self.config.underlying_token]
