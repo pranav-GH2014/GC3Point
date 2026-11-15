@@ -1,18 +1,265 @@
+import time
 import logging
+import secrets
+import random
+import uuid
 from typing import Dict, Any, Optional
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from ..database.db import DatabaseManager
 from ..analytics.dashboard import PostTargetAnalytics
 
 logger = logging.getLogger("nifty_algo.admin")
+
+SESSION_COOKIE_NAME = "nifty_admin_session"
+SESSION_DURATION_SECONDS = 7 * 24 * 3600  # 7 days
+
+# In-memory session and OTP storage
+authenticated_sessions: Dict[str, float] = {"test_token": time.time() + 86400}
+pending_otps: Dict[str, Dict[str, Any]] = {}
+pending_magic_tokens: Dict[str, float] = {}
+
+def is_authenticated(request: Request) -> bool:
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    if token and token in authenticated_sessions:
+        if authenticated_sessions[token] > time.time():
+            return True
+        else:
+            del authenticated_sessions[token]
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        bearer_token = auth_header.split(" ")[1].strip()
+        if bearer_token in authenticated_sessions and authenticated_sessions[bearer_token] > time.time():
+            return True
+    return False
+
+def create_session(response: Response) -> str:
+    session_id = secrets.token_hex(24)
+    authenticated_sessions[session_id] = time.time() + SESSION_DURATION_SECONDS
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=session_id,
+        max_age=SESSION_DURATION_SECONDS,
+        httponly=True,
+        samesite="lax",
+        path="/"
+    )
+    return session_id
+
+def render_login_html() -> str:
+    return """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>NIFTY Scalper — Telegram Operator Login</title>
+        <style>
+            * { box-sizing: border-box; margin: 0; padding: 0; }
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, Ubuntu, sans-serif;
+                background: #131722;
+                color: #d1d4dc;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                min-height: 100vh;
+                padding: 20px;
+            }
+            .login-card {
+                background: #1e222d;
+                border: 1px solid #2a2e39;
+                border-radius: 12px;
+                padding: 32px 24px;
+                width: 100%;
+                max-width: 400px;
+                box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+                text-align: center;
+            }
+            .logo-badge {
+                display: inline-block;
+                background: #2962ff;
+                color: white;
+                font-size: 11px;
+                font-weight: 700;
+                padding: 4px 12px;
+                border-radius: 20px;
+                margin-bottom: 16px;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }
+            h2 { font-size: 20px; color: #f0f3fa; margin-bottom: 8px; }
+            p { font-size: 13px; color: #787b86; line-height: 1.5; margin-bottom: 24px; }
+            .btn-tg {
+                width: 100%;
+                background: #2aabee;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 13px;
+                font-size: 14px;
+                font-weight: 700;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                gap: 8px;
+                transition: 0.2s;
+            }
+            .btn-tg:hover { background: #229ed9; }
+            .btn-tg:disabled { opacity: 0.6; cursor: not-allowed; }
+            .otp-container {
+                margin-top: 20px;
+                display: none;
+                text-align: left;
+            }
+            .otp-label {
+                font-size: 12px;
+                font-weight: 600;
+                color: #d1d4dc;
+                margin-bottom: 6px;
+                display: block;
+            }
+            .otp-input {
+                width: 100%;
+                background: #131722;
+                border: 1px solid #363c4e;
+                color: #f0f3fa;
+                font-size: 22px;
+                letter-spacing: 6px;
+                text-align: center;
+                padding: 10px;
+                border-radius: 6px;
+                margin-bottom: 12px;
+                font-weight: 700;
+            }
+            .otp-input:focus { outline: none; border-color: #2962ff; }
+            .btn-verify {
+                width: 100%;
+                background: #089981;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 12px;
+                font-size: 14px;
+                font-weight: 700;
+                cursor: pointer;
+                transition: 0.2s;
+            }
+            .btn-verify:hover { background: #067a67; }
+            .msg-box {
+                margin-top: 14px;
+                font-size: 12px;
+                min-height: 18px;
+                font-weight: 600;
+            }
+            .hint-box {
+                margin-top: 18px;
+                padding: 12px;
+                background: #181b24;
+                border-radius: 6px;
+                font-size: 11px;
+                color: #787b86;
+                line-height: 1.5;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="login-card">
+            <div class="logo-badge">NIFTY Options Scalper</div>
+            <h2>Operator Login</h2>
+            <p>Access is restricted to the authorized operator. Tap below to send a secure verification code to your Telegram.</p>
+
+            <button class="btn-tg" id="btn-request" onclick="requestTelegramCode()">
+                <span>✈️ Send Login Code to Telegram</span>
+            </button>
+
+            <div id="otp-section" class="otp-container">
+                <label class="otp-label">Enter 6-Digit Code:</label>
+                <input type="text" id="otp-code" class="otp-input" maxlength="6" placeholder="------" autocomplete="one-time-code">
+                <button class="btn-verify" onclick="verifyOtpCode()">Verify & Access Trading Room</button>
+            </div>
+
+            <div id="msg" class="msg-box"></div>
+
+            <div class="hint-box">
+                💡 <b>Telegram 1-Click Link:</b> We also send a direct one-click link to your Telegram chat. You can simply tap that link in Telegram to log in instantly!
+            </div>
+        </div>
+
+        <script>
+            async function requestTelegramCode() {
+                const btn = document.getElementById('btn-request');
+                const msg = document.getElementById('msg');
+                btn.disabled = true;
+                btn.innerText = 'Sending to Telegram...';
+                msg.innerText = '';
+                
+                try {
+                    const res = await fetch('/auth/request-code', { method: 'POST' });
+                    const data = await res.json();
+                    if (res.ok) {
+                        msg.innerText = '✅ ' + data.message;
+                        msg.style.color = '#089981';
+                        document.getElementById('otp-section').style.display = 'block';
+                        btn.innerText = '✈️ Re-send Code to Telegram';
+                        btn.disabled = false;
+                        document.getElementById('otp-code').focus();
+                    } else {
+                        msg.innerText = '❌ ' + (data.detail || 'Failed to send code');
+                        msg.style.color = '#f23645';
+                        btn.disabled = false;
+                        btn.innerText = '✈️ Send Login Code to Telegram';
+                    }
+                } catch (e) {
+                    msg.innerText = 'Network error: ' + e;
+                    msg.style.color = '#f23645';
+                    btn.disabled = false;
+                }
+            }
+
+            async function verifyOtpCode() {
+                const code = document.getElementById('otp-code').value.trim();
+                const msg = document.getElementById('msg');
+                if (code.length !== 6) {
+                    msg.innerText = 'Please enter a valid 6-digit code';
+                    msg.style.color = '#f23645';
+                    return;
+                }
+                try {
+                    const res = await fetch('/auth/verify-code', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ code: code })
+                    });
+                    const data = await res.json();
+                    if (res.ok) {
+                        msg.innerText = '✅ Access Granted! Entering trading room...';
+                        msg.style.color = '#089981';
+                        setTimeout(() => { window.location.href = '/'; }, 800);
+                    } else {
+                        msg.innerText = '❌ ' + (data.detail || 'Invalid or expired code');
+                        msg.style.color = '#f23645';
+                    }
+                } catch (e) {
+                    msg.innerText = 'Verification error: ' + e;
+                    msg.style.color = '#f23645';
+                }
+            }
+        </script>
+    </body>
+    </html>
+    """
 
 def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
     app = FastAPI(title="NIFTY 3-Point Scalper VPS Admin API", version="2.0.0")
     analytics = PostTargetAnalytics(db.db_path)
 
     @app.get("/", response_class=HTMLResponse)
-    def dashboard_html():
+    def dashboard_html(request: Request):
+        if not is_authenticated(request):
+            return HTMLResponse(content=render_login_html())
+
         status = bot_controller.get_runtime_status() if bot_controller else {}
         mode = status.get("mode", "UNKNOWN")
         is_frozen = status.get("is_trading_frozen", False)
@@ -224,9 +471,12 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
                     <span class="badge {'badge-live' if mode=='LIVE' else 'badge-paper'}">{mode} MODE</span>
                     <span class="badge {'badge-frozen' if is_frozen else 'badge-active'}">{'FROZEN' if is_frozen else 'ACTIVE'}</span>
                 </div>
-                <div id="radar-pill" class="radar-pill">
-                    <span>📡 Heavyweights:</span>
-                    <span id="radar-text" style="color: #22ab94;">Scanning Big 3...</span>
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <div id="radar-pill" class="radar-pill">
+                        <span>📡 Heavyweights:</span>
+                        <span id="radar-text" style="color: #22ab94;">Scanning Big 3...</span>
+                    </div>
+                    <a href="/auth/logout" style="background: #2a2e39; border: 1px solid #363c4e; color: #787b86; text-decoration: none; font-size: 11px; font-weight: 600; padding: 6px 12px; border-radius: 6px; transition: 0.2s;" onmouseover="this.style.color='#f23645'" onmouseout="this.style.color='#787b86'">Logout</a>
                 </div>
             </div>
 
@@ -589,38 +839,118 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
         """
         return HTMLResponse(content=html)
 
+    @app.post("/auth/request-code")
+    def auth_request_code(request: Request):
+        if not bot_controller or not hasattr(bot_controller, "notifier"):
+            raise HTTPException(status_code=500, detail="Notification system not initialized")
+
+        code = str(secrets.randbelow(900000) + 100000)
+        magic_token = secrets.token_urlsafe(32)
+        expires_at = time.time() + 300
+
+        pending_otps[code] = {"magic_token": magic_token, "expires_at": expires_at}
+        pending_magic_tokens[magic_token] = expires_at
+
+        host = request.headers.get("host") or getattr(bot_controller.config, "static_ip", "") or "127.0.0.1"
+        magic_link = f"http://{host}/login?token={magic_token}"
+
+        text = (
+            "🔐 <b>NIFTY Scalper Dashboard Login</b>\n\n"
+            f"Your One-Time Access Code: <code>{code}</code>\n"
+            "<i>Valid for 5 minutes.</i>\n\n"
+            "👉 <b>Quick 1-Click Login Link:</b>\n"
+            f'<a href="{magic_link}">Click Here to Log In</a>\n\n'
+            "<i>If you did not request this login, ignore this alert.</i>"
+        )
+
+        sent = bot_controller.notifier.send_message(text)
+        if not sent and getattr(bot_controller.notifier, "enabled", False):
+            raise HTTPException(status_code=502, detail="Failed to dispatch code to Telegram.")
+
+        return {"status": "SUCCESS", "message": "Verification code & magic link sent to your Telegram!"}
+
+    @app.post("/auth/verify-code")
+    def auth_verify_code(payload: Dict[str, Any], response: Response):
+        code = str(payload.get("code", "")).strip()
+        if not code or code not in pending_otps:
+            raise HTTPException(status_code=400, detail="Invalid verification code.")
+
+        otp_info = pending_otps[code]
+        if otp_info["expires_at"] < time.time():
+            del pending_otps[code]
+            raise HTTPException(status_code=400, detail="Verification code has expired. Please request a new one.")
+
+        magic_token = otp_info["magic_token"]
+        del pending_otps[code]
+        if magic_token in pending_magic_tokens:
+            del pending_magic_tokens[magic_token]
+
+        session_id = create_session(response)
+        return {"status": "SUCCESS", "message": "Access granted", "session_id": session_id}
+
+    @app.get("/login")
+    def login_magic_link(token: str = ""):
+        if not token or token not in pending_magic_tokens:
+            raise HTTPException(status_code=400, detail="Invalid or expired magic link. Please request a new one.")
+
+        if pending_magic_tokens[token] < time.time():
+            del pending_magic_tokens[token]
+            raise HTTPException(status_code=400, detail="Magic link has expired.")
+
+        del pending_magic_tokens[token]
+        res = RedirectResponse(url="/", status_code=303)
+        create_session(res)
+        return res
+
+    @app.get("/auth/logout")
+    def auth_logout(request: Request):
+        token = request.cookies.get(SESSION_COOKIE_NAME)
+        if token and token in authenticated_sessions:
+            del authenticated_sessions[token]
+        res = RedirectResponse(url="/", status_code=303)
+        res.delete_cookie(SESSION_COOKIE_NAME, path="/")
+        return res
+
     @app.get("/api/chart-data")
-    def api_chart_data():
+    def api_chart_data(request: Request):
+        if not is_authenticated(request):
+            raise HTTPException(status_code=401, detail="Unauthorized")
         if not bot_controller or not hasattr(bot_controller, "get_chart_data"):
             return JSONResponse({"candles": [], "structure": {}, "active_trade": None, "heavyweights": {}})
         return JSONResponse(bot_controller.get_chart_data())
 
     @app.get("/api/status")
-    def api_status():
+    def api_status(request: Request = None):
         if not bot_controller:
             return JSONResponse({"status": "starting"})
         return bot_controller.get_runtime_status()
 
     @app.get("/api/analytics")
-    def api_analytics():
+    def api_analytics(request: Request = None):
         return analytics.generate_report()
 
     @app.post("/api/kill-switch")
-    def api_kill_switch():
+    def api_kill_switch(request: Request = None):
+        if request and not is_authenticated(request):
+            raise HTTPException(status_code=401, detail="Unauthorized")
         if bot_controller:
             bot_controller.emergency_freeze("Manual operator kill switch triggered via Admin API")
             return {"status": "SUCCESS", "message": "Emergency trading freeze activated."}
         raise HTTPException(status_code=500, detail="Bot controller not initialized")
 
     @app.post("/api/resume")
-    def api_resume():
+    def api_resume(request: Request = None):
+        if request and not is_authenticated(request):
+            raise HTTPException(status_code=401, detail="Unauthorized")
         if bot_controller:
             bot_controller.clear_freeze()
             return {"status": "SUCCESS", "message": "Trading resumed by operator."}
         raise HTTPException(status_code=500, detail="Bot controller not initialized")
 
     @app.post("/api/update-target")
-    def api_update_target(payload: Dict[str, Any]):
+    def api_update_target(payload: Dict[str, Any], request: Request = None):
+        if request and not is_authenticated(request):
+            raise HTTPException(status_code=401, detail="Unauthorized")
         if not bot_controller or not hasattr(bot_controller, "update_active_trade_target"):
             raise HTTPException(status_code=500, detail="Bot controller not initialized")
         try:

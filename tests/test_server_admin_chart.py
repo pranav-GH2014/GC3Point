@@ -3,9 +3,19 @@ from fastapi.testclient import TestClient
 from nifty_algo.monitoring.server_admin import create_admin_app
 from nifty_algo.database.db import DatabaseManager
 
+class MockNotifier:
+    def __init__(self):
+        self.enabled = False
+        self.last_msg = ""
+    def send_message(self, text, parse_mode="HTML"):
+        self.last_msg = text
+        return True
+
 class MockBotController:
     def __init__(self):
         self.latest_nifty_spot = 25050.0
+        self.notifier = MockNotifier()
+        self.config = type("Config", (), {"static_ip": "127.0.0.1"})()
 
     def get_runtime_status(self):
         return {
@@ -68,17 +78,55 @@ def test_admin_chart_api_endpoint(tmp_path):
     # Direct route testing without TestClient event-loop lock in Python 3.14
     routes = {r.path: r.endpoint for r in app.routes if hasattr(r, "endpoint")}
     
-    # 1. Test GET /
+    class DummyRequest:
+        def __init__(self, cookies=None, headers=None):
+            self.cookies = cookies or {}
+            self.headers = headers or {}
+
+    class DummyResponse:
+        def __init__(self):
+            self.cookies = {}
+        def set_cookie(self, key, value, **kwargs):
+            self.cookies[key] = value
+
+    # 1. Test GET / unauthenticated -> returns Telegram Login page
     dashboard_fn = routes["/"]
-    html_res = dashboard_fn()
+    unauth_req = DummyRequest()
+    html_unauth = dashboard_fn(unauth_req)
+    unauth_str = html_unauth.body.decode()
+    assert "Operator Login" in unauth_str
+    assert "Send Login Code to Telegram" in unauth_str
+
+    # 2. Test Telegram Auth Flow (/auth/request-code and /auth/verify-code)
+    req_code_fn = routes["/auth/request-code"]
+    res_req = req_code_fn(unauth_req)
+    assert res_req["status"] == "SUCCESS"
+    assert "Verification code" in res_req["message"]
+    # Check that code was in message
+    import re
+    match = re.search(r"<code>(\d{6})</code>", bot.notifier.last_msg)
+    assert match is not None
+    otp_code = match.group(1)
+
+    verify_code_fn = routes["/auth/verify-code"]
+    dummy_resp = DummyResponse()
+    res_verify = verify_code_fn({"code": otp_code}, dummy_resp)
+    assert res_verify["status"] == "SUCCESS"
+    session_id = res_verify["session_id"]
+    assert "nifty_admin_session" in dummy_resp.cookies
+
+    # 3. Test GET / authenticated with session cookie -> returns TradingView visualizer
+    auth_req = DummyRequest(cookies={"nifty_admin_session": session_id})
+    html_res = dashboard_fn(auth_req)
     body_str = html_res.body.decode()
     assert "LightweightCharts" in body_str
     assert "hud-pnl" in body_str
     assert "spot-price" in body_str
+    assert "Logout" in body_str
 
-    # 2. Test GET /api/chart-data
+    # 4. Test GET /api/chart-data with auth
     chart_fn = routes["/api/chart-data"]
-    json_res = chart_fn()
+    json_res = chart_fn(auth_req)
     data = json.loads(json_res.body.decode())
     assert data["capital"] == 3971.0
     assert len(data["candles"]) == 2
@@ -87,8 +135,8 @@ def test_admin_chart_api_endpoint(tmp_path):
     assert data["active_trade"]["unrealized_pnl"] == 520.0
     assert data["heavyweights"]["is_bullish_aligned"] is True
 
-    # 3. Test POST /api/update-target (synchronous)
+    # 5. Test POST /api/update-target (synchronous)
     update_fn = routes["/api/update-target"]
-    res = update_fn({"target_pts": 8.0})
+    res = update_fn({"target_pts": 8.0}, auth_req)
     assert res["status"] == "SUCCESS"
     assert res["target_pts"] == 8.0
