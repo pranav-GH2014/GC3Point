@@ -1,0 +1,16 @@
+[Unit]
+Description=NIFTY 50 Options-Buying Algo Bot (+3 Point Scalper on Port 8002)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/nifty_3point_algo
+Environment="PORT=8002"
+Environment="PYTHONUNBUFFERED=1"
+ExecStart=/root/nifty_3point_algo/venv/bin/python /root/nifty_3point_algo/main.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

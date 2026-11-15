@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Environments
+venv/
+env/
+.env
+
+# Database & Runtime Logs
+*.db
+*.db-journal
+*.log
+
+# Sensitive secrets (use config.example.json or .env.example)
+config.json
+SUU388config.json

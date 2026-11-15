@@ -1,0 +1,640 @@
+import logging
+from typing import Dict, Any, Optional
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse
+from ..database.db import DatabaseManager
+from ..analytics.dashboard import PostTargetAnalytics
+
+logger = logging.getLogger("nifty_algo.admin")
+
+def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
+    app = FastAPI(title="NIFTY 3-Point Scalper VPS Admin API", version="2.0.0")
+    analytics = PostTargetAnalytics(db.db_path)
+
+    @app.get("/", response_class=HTMLResponse)
+    def dashboard_html():
+        status = bot_controller.get_runtime_status() if bot_controller else {}
+        mode = status.get("mode", "UNKNOWN")
+        is_frozen = status.get("is_trading_frozen", False)
+        capital = status.get("capital", 5000.0)
+        consecutive_losses = status.get("consecutive_losses", 0)
+
+        html = f"""
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>NIFTY Scalper — Live Visual Trading Room</title>
+            <!-- TradingView Lightweight Charts Library -->
+            <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+            <style>
+                * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+                body {{
+                    font-family: -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, Ubuntu, sans-serif;
+                    background: #131722;
+                    color: #d1d4dc;
+                    overflow-x: hidden;
+                }}
+                .navbar {{
+                    background: #1e222d;
+                    border-bottom: 1px solid #2a2e39;
+                    padding: 12px 24px;
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    flex-wrap: wrap;
+                    gap: 12px;
+                }}
+                .nav-title {{
+                    display: flex;
+                    align-items: center;
+                    gap: 14px;
+                }}
+                .nav-title h1 {{
+                    font-size: 18px;
+                    font-weight: 700;
+                    color: #f0f3fa;
+                    letter-spacing: 0.5px;
+                }}
+                .badge {{
+                    font-size: 11px;
+                    font-weight: 700;
+                    padding: 4px 10px;
+                    border-radius: 4px;
+                    text-transform: uppercase;
+                }}
+                .badge-live {{ background: #f23645; color: #fff; }}
+                .badge-paper {{ background: #2962ff; color: #fff; }}
+                .badge-active {{ background: #089981; color: #fff; }}
+                .badge-frozen {{ background: #f57c00; color: #fff; }}
+                
+                .radar-pill {{
+                    background: #2a2e39;
+                    border: 1px solid #363c4e;
+                    border-radius: 6px;
+                    padding: 6px 14px;
+                    font-size: 12px;
+                    font-weight: 600;
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                }}
+                
+                .main-layout {{
+                    display: grid;
+                    grid-template-columns: 1fr 340px;
+                    gap: 16px;
+                    padding: 16px 24px;
+                    height: calc(100vh - 65px);
+                }}
+                @media (max-width: 1024px) {{
+                    .main-layout {{ grid-template-columns: 1fr; height: auto; }}
+                }}
+                
+                .chart-section {{
+                    background: #1e222d;
+                    border: 1px solid #2a2e39;
+                    border-radius: 8px;
+                    display: flex;
+                    flex-direction: column;
+                    position: relative;
+                    overflow: hidden;
+                }}
+                .chart-header {{
+                    padding: 10px 16px;
+                    border-bottom: 1px solid #2a2e39;
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    background: #181b24;
+                }}
+                .ticker-info {{
+                    display: flex;
+                    align-items: baseline;
+                    gap: 12px;
+                }}
+                .ticker-symbol {{ font-size: 16px; font-weight: bold; color: #f0f3fa; }}
+                .ticker-price {{ font-size: 20px; font-weight: bold; color: #22ab94; }}
+                
+                #chart {{
+                    width: 100%;
+                    flex: 1;
+                    min-height: 520px;
+                }}
+                
+                /* Floating TradingView Position / Unrealized P&L HUD */
+                .hud-pnl {{
+                    position: absolute;
+                    top: 55px;
+                    left: 20px;
+                    z-index: 10;
+                    background: rgba(30, 34, 45, 0.92);
+                    backdrop-filter: blur(8px);
+                    border: 1px solid #363c4e;
+                    border-radius: 8px;
+                    padding: 12px 18px;
+                    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+                    display: none;
+                }}
+                .hud-title {{ font-size: 11px; text-transform: uppercase; color: #787b86; margin-bottom: 4px; }}
+                .hud-value {{ font-size: 22px; font-weight: 800; }}
+                .hud-sub {{ font-size: 12px; color: #9598a1; margin-top: 4px; }}
+                .text-up {{ color: #089981; }}
+                .text-down {{ color: #f23645; }}
+                
+                .sidebar {{
+                    display: flex;
+                    flex-direction: column;
+                    gap: 16px;
+                }}
+                .panel {{
+                    background: #1e222d;
+                    border: 1px solid #2a2e39;
+                    border-radius: 8px;
+                    padding: 16px;
+                }}
+                .panel-title {{
+                    font-size: 13px;
+                    font-weight: 700;
+                    text-transform: uppercase;
+                    color: #787b86;
+                    margin-bottom: 12px;
+                    border-bottom: 1px solid #2a2e39;
+                    padding-bottom: 6px;
+                }}
+                
+                .stat-grid {{
+                    display: grid;
+                    grid-template-columns: 1fr 1fr;
+                    gap: 10px;
+                }}
+                .stat-card {{
+                    background: #131722;
+                    border: 1px solid #2a2e39;
+                    border-radius: 6px;
+                    padding: 10px;
+                }}
+                .stat-lbl {{ font-size: 11px; color: #787b86; }}
+                .stat-num {{ font-size: 16px; font-weight: 700; margin-top: 4px; }}
+                
+                .trade-item {{
+                    background: #131722;
+                    border-left: 3px solid #363c4e;
+                    padding: 10px;
+                    border-radius: 4px;
+                    margin-bottom: 8px;
+                    font-size: 12px;
+                }}
+                .trade-item.win {{ border-left-color: #089981; }}
+                .trade-item.loss {{ border-left-color: #f23645; }}
+                
+                .btn {{
+                    width: 100%;
+                    padding: 10px;
+                    border: none;
+                    border-radius: 6px;
+                    font-weight: 700;
+                    font-size: 13px;
+                    cursor: pointer;
+                    transition: 0.2s;
+                }}
+                .btn-kill {{ background: #f23645; color: white; margin-bottom: 8px; }}
+                .btn-kill:hover {{ background: #cc2431; }}
+                .btn-resume {{ background: #089981; color: white; }}
+                .btn-resume:hover {{ background: #067a67; }}
+                .btn-tgt {{
+                    background: #2a2e39;
+                    color: #d1d4dc;
+                    border: 1px solid #363c4e;
+                    border-radius: 4px;
+                    padding: 4px 8px;
+                    font-size: 11px;
+                    cursor: pointer;
+                    font-weight: 600;
+                    transition: 0.15s;
+                }}
+                .btn-tgt:hover {{ background: #363c4e; color: #fff; border-color: #26a69a; }}
+            </style>
+        </head>
+        <body>
+            <div class="navbar">
+                <div class="nav-title">
+                    <h1>NIFTY Options Scalper</h1>
+                    <span class="badge {'badge-live' if mode=='LIVE' else 'badge-paper'}">{mode} MODE</span>
+                    <span class="badge {'badge-frozen' if is_frozen else 'badge-active'}">{'FROZEN' if is_frozen else 'ACTIVE'}</span>
+                </div>
+                <div id="radar-pill" class="radar-pill">
+                    <span>📡 Heavyweights:</span>
+                    <span id="radar-text" style="color: #22ab94;">Scanning Big 3...</span>
+                </div>
+            </div>
+
+            <div class="main-layout">
+                <!-- TradingView Visual Chart -->
+                <div class="chart-section">
+                    <div class="chart-header">
+                        <div class="ticker-info">
+                            <span class="ticker-symbol">NIFTY 50 (1m)</span>
+                            <span id="spot-price" class="ticker-price">--</span>
+                        </div>
+                        <div style="font-size: 12px; color: #787b86;">
+                            Target: <b style="color: #089981;">+3.0 / +15.0 pts</b> | Initial SL: <b style="color: #f23645;">-5.0 pts</b>
+                        </div>
+                    </div>
+
+                    <!-- Floating Real-Time P&L HUD -->
+                    <div id="hud-pnl" class="hud-pnl">
+                        <div class="hud-title">ACTIVE TRADE: <span id="hud-contract">N/A</span></div>
+                        <div id="hud-pnl-val" class="hud-value text-up">₹0.00</div>
+                        <div id="hud-sub" class="hud-sub">Option LTP: ₹0.00 | Move: 0.0 pts</div>
+                    </div>
+
+                    <div id="chart"></div>
+                </div>
+
+                <!-- Sidebar Controls & Stats -->
+                <div class="sidebar">
+                    <div class="panel">
+                        <div class="panel-title">Session Overview</div>
+                        <div class="stat-grid">
+                            <div class="stat-card">
+                                <div class="stat-lbl">Capital (Live Kite)</div>
+                                <div class="stat-num" id="live-capital">₹{capital:,.2f}</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-lbl">3-Loss Cap</div>
+                                <div class="stat-num" id="loss-cap">{consecutive_losses} / 3</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="panel">
+                        <div class="panel-title">Active Position</div>
+                        <div id="active-pos-info" style="font-size: 13px; line-height: 1.6;">
+                            <span style="color: #787b86;">No active position. Scanning for S/R reversal or breakout...</span>
+                        </div>
+                    </div>
+
+                    <div class="panel" style="flex: 1; overflow-y: auto;">
+                        <div class="panel-title">Recent Closed Trades</div>
+                        <div id="recent-trades-list">
+                            <span style="font-size: 12px; color: #787b86;">Awaiting completed trades...</span>
+                        </div>
+                    </div>
+
+                    <div class="panel">
+                        <button class="btn btn-kill" onclick="triggerKillSwitch()">🚨 EMERGENCY KILL SWITCH</button>
+                        <button class="btn btn-resume" onclick="triggerResume()">✅ RESUME TRADING</button>
+                    </div>
+                </div>
+            </div>
+
+            <script>
+                // Initialize TradingView Lightweight Chart
+                const chartContainer = document.getElementById('chart');
+                const chart = LightweightCharts.createChart(chartContainer, {{
+                    layout: {{
+                        background: {{ color: '#1e222d' }},
+                        textColor: '#9598a1',
+                    }},
+                    grid: {{
+                        vertLines: {{ color: '#2a2e39' }},
+                        horzLines: {{ color: '#2a2e39' }},
+                    }},
+                    crosshair: {{
+                        mode: LightweightCharts.CrosshairMode.Normal,
+                    }},
+                    rightPriceScale: {{
+                        borderColor: '#2a2e39',
+                    }},
+                    timeScale: {{
+                        borderColor: '#2a2e39',
+                        timeVisible: true,
+                        secondsVisible: false,
+                    }},
+                }});
+
+                // Candlestick Series
+                const candleSeries = chart.addCandlestickSeries({{
+                    upColor: '#089981',
+                    downColor: '#f23645',
+                    borderUpColor: '#089981',
+                    borderDownColor: '#f23645',
+                    wickUpColor: '#089981',
+                    wickDownColor: '#f23645',
+                }});
+
+                // Volume Histogram
+                const volumeSeries = chart.addHistogramSeries({{
+                    color: '#26a69a',
+                    priceFormat: {{ type: 'volume' }},
+                    priceScaleId: '',
+                    scaleMargins: {{ top: 0.85, bottom: 0 }},
+                }});
+
+                let activePriceLines = [];
+                let markers = [];
+
+                function clearPriceLines() {{
+                    activePriceLines.forEach(l => candleSeries.removePriceLine(l));
+                    activePriceLines = [];
+                }}
+
+                async function fetchChartData() {{
+                    try {{
+                        const res = await fetch('/api/chart-data');
+                        const data = await res.json();
+
+                        // 1. Update Candlestick & Volume Data
+                        if (data.candles && data.candles.length > 0) {{
+                            candleSeries.setData(data.candles);
+                            const volData = data.candles.map(c => ({{
+                                time: c.time,
+                                value: c.volume,
+                                color: c.close >= c.open ? 'rgba(8, 153, 129, 0.4)' : 'rgba(242, 54, 69, 0.4)'
+                            }}));
+                            volumeSeries.setData(volData);
+
+                            const latest = data.candles[data.candles.length - 1];
+                            document.getElementById('spot-price').innerText = '₹' + latest.close.toFixed(2);
+                        }}
+
+                        clearPriceLines();
+
+                        // 2. Draw Dynamic Support & Resistance Zones
+                        if (data.structure) {{
+                            (data.structure.supports || []).forEach(s => {{
+                                const line = candleSeries.createPriceLine({{
+                                    price: s,
+                                    color: '#2962ff',
+                                    lineWidth: 1,
+                                    lineStyle: LightweightCharts.LineStyle.Dashed,
+                                    axisLabelVisible: true,
+                                    title: 'SUPPORT ' + s.toFixed(0),
+                                }});
+                                activePriceLines.push(line);
+                            }});
+
+                            (data.structure.resistances || []).forEach(r => {{
+                                const line = candleSeries.createPriceLine({{
+                                    price: r,
+                                    color: '#f57c00',
+                                    lineWidth: 1,
+                                    lineStyle: LightweightCharts.LineStyle.Dashed,
+                                    axisLabelVisible: true,
+                                    title: 'RESISTANCE ' + r.toFixed(0),
+                                }});
+                                activePriceLines.push(line);
+                            }});
+                        }}
+
+                        // 3. Draw TradingView Long/Short Position Box (Green & Red Zones) & Live HUD
+                        const pos = data.active_trade;
+                        const hud = document.getElementById('hud-pnl');
+                        const posInfo = document.getElementById('active-pos-info');
+
+                        if (pos) {{
+                            // Draw Entry Line (White/Blue)
+                            const entryLine = candleSeries.createPriceLine({{
+                                price: pos.entry_spot,
+                                color: '#ffffff',
+                                lineWidth: 2,
+                                lineStyle: LightweightCharts.LineStyle.Solid,
+                                axisLabelVisible: true,
+                                title: pos.direction + ' ENTRY',
+                            }});
+                            activePriceLines.push(entryLine);
+
+                            // Draw Green Target Zone
+                            const targetLine = candleSeries.createPriceLine({{
+                                price: pos.spot_target,
+                                color: '#089981',
+                                lineWidth: 2,
+                                lineStyle: LightweightCharts.LineStyle.Solid,
+                                axisLabelVisible: true,
+                                title: 'TARGET +' + pos.target_pts.toFixed(1) + ' pts',
+                            }});
+                            activePriceLines.push(targetLine);
+
+                            // Draw Maximum Structural Green/Red Room Ceiling
+                            if (pos.max_spot_target && Math.abs(pos.max_spot_target - pos.spot_target) > 1.0) {{
+                                const maxLine = candleSeries.createPriceLine({{
+                                    price: pos.max_spot_target,
+                                    color: '#26a69a',
+                                    lineWidth: 2,
+                                    lineStyle: LightweightCharts.LineStyle.Dashed,
+                                    axisLabelVisible: true,
+                                    title: 'MAX STRUCTURAL ROOM +' + (pos.max_opt_pts || 0).toFixed(1) + ' pts (@ ' + pos.max_spot_target.toFixed(1) + ')',
+                                }});
+                                activePriceLines.push(maxLine);
+                            }}
+
+                            // Draw Red Stop Loss Zone
+                            const slLine = candleSeries.createPriceLine({{
+                                price: pos.spot_sl,
+                                color: '#f23645',
+                                lineWidth: 2,
+                                lineStyle: LightweightCharts.LineStyle.Solid,
+                                axisLabelVisible: true,
+                                title: 'SL -' + pos.sl_pts.toFixed(1) + ' pts',
+                            }});
+                            activePriceLines.push(slLine);
+
+                            // Update Floating HUD
+                            hud.style.display = 'block';
+                            document.getElementById('hud-contract').innerText = pos.tradingsymbol;
+                            const pnlVal = document.getElementById('hud-pnl-val');
+                            const isWin = pos.unrealized_pnl >= 0;
+                            pnlVal.innerText = (isWin ? '+₹' : '-₹') + Math.abs(pos.unrealized_pnl).toFixed(2);
+                            pnlVal.className = 'hud-value ' + (isWin ? 'text-up' : 'text-down');
+
+                            document.getElementById('hud-sub').innerText = 
+                                'Option: ₹' + pos.current_opt_ltp.toFixed(2) + 
+                                ' | Move: ' + (pos.unrealized_pts >= 0 ? '+' : '') + pos.unrealized_pts.toFixed(1) + ' pts' +
+                                ' | Max Room: +' + (pos.max_opt_pts || 0).toFixed(1) + ' pts' +
+                                ' | R:R 1:' + (pos.target_pts / pos.sl_pts).toFixed(1);
+
+                            const maxRoomLabel = pos.max_opt_pts ? ('+' + pos.max_opt_pts.toFixed(1) + ' pts (@ ' + pos.max_spot_target + ')') : 'N/A';
+                            posInfo.innerHTML = `
+                                <b>Contract:</b> ${{pos.tradingsymbol}}<br>
+                                <b>Direction:</b> <span class="${{pos.direction=='CE' ? 'text-up' : 'text-down'}}">${{pos.direction}}</span><br>
+                                <b>Entry Premium:</b> ₹${{pos.entry_premium.toFixed(2)}}<br>
+                                <b>Active Target:</b> <b style="color: #089981;">₹${{pos.target_premium.toFixed(2)}} (+${{pos.target_pts.toFixed(1)}} pts)</b><br>
+                                <b>Full Structural Room:</b> <span style="color: #26a69a; font-weight: 600;">${{maxRoomLabel}}</span><br>
+                                <b>Stop Loss:</b> ₹${{pos.sl_premium.toFixed(2)}} (-${{pos.sl_pts.toFixed(1)}} pts)<br>
+                                <b>Live Unrealized:</b> <b class="${{isWin ? 'text-up' : 'text-down'}}">${{isWin ? '+₹' : '-₹'}}${{Math.abs(pos.unrealized_pnl).toFixed(2)}}</b>
+                                
+                                <hr style="border: 0; border-top: 1px solid #2a2e39; margin: 10px 0;">
+                                <div style="font-weight: 600; font-size: 12px; margin-bottom: 6px; color: #f0f3fa;">🎯 Adjust Profit Target on Kite:</div>
+                                <div style="display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 8px;">
+                                    <button class="btn-tgt" onclick="setTargetPts(3.0)">+3</button>
+                                    <button class="btn-tgt" onclick="setTargetPts(5.0)">+5</button>
+                                    <button class="btn-tgt" onclick="setTargetPts(10.0)">+10</button>
+                                    <button class="btn-tgt" onclick="setTargetPts(15.0)">+15</button>
+                                    ${{pos.max_opt_pts ? `<button class="btn-tgt" style="border-color: #26a69a; color: #26a69a;" onclick="setTargetPts(${{pos.max_opt_pts}})">Max (+${{pos.max_opt_pts.toFixed(1)}})</button>` : ''}}
+                                </div>
+                                <div style="display: flex; gap: 6px;">
+                                    <input type="number" id="custom-target-input" step="0.5" min="1" placeholder="Pts" value="${{pos.target_pts}}" style="width: 65px; background: #131722; border: 1px solid #363c4e; color: #fff; padding: 5px 8px; border-radius: 4px; font-size: 12px;">
+                                    <button class="btn btn-resume" style="flex: 1; padding: 5px 8px; font-size: 11px;" onclick="applyCustomTarget()">Update Target on Kite</button>
+                                </div>
+                                <div id="target-msg" style="font-size: 11px; margin-top: 5px; font-weight: 600;"></div>
+                            `;
+                        }} else {{
+                            hud.style.display = 'none';
+                            posInfo.innerHTML = '<span style="color: #787b86;">No active position. Scanning for S/R reversal or breakout...</span>';
+                        }}
+
+                        // Live Capital Update from Kite
+                        if (data.capital !== undefined) {{
+                            const capEl = document.getElementById('live-capital');
+                            if (capEl) {{
+                                capEl.innerText = '₹' + Number(data.capital).toLocaleString('en-IN', {{minimumFractionDigits: 2, maximumFractionDigits: 2}});
+                            }}
+                        }}
+
+                        // 4. Update Big 3 Heavyweights Radar
+                        if (data.heavyweights) {{
+                            const radar = document.getElementById('radar-text');
+                            radar.innerText = data.heavyweights.summary;
+                            if (data.heavyweights.is_bullish_aligned) {{
+                                radar.style.color = '#089981';
+                            }} else if (data.heavyweights.is_bearish_aligned) {{
+                                radar.style.color = '#f23645';
+                            }} else if (data.heavyweights.is_divergence_trap) {{
+                                radar.style.color = '#f57c00';
+                            }} else {{
+                                radar.style.color = '#d1d4dc';
+                            }}
+                        }}
+
+                        // 5. Update Recent Closed Trades List
+                        if (data.recent_trades && data.recent_trades.length > 0) {{
+                            const tradeList = document.getElementById('recent-trades-list');
+                            tradeList.innerHTML = data.recent_trades.slice(0, 5).map(t => {{
+                                const isTarget = (t.exit_reason || '').toLowerCase().includes('target');
+                                return `
+                                    <div class="trade-item ${{isTarget ? 'win' : 'loss'}}">
+                                        <b>${{t.tradingsymbol}}</b> (${{t.option_type}})<br>
+                                        <span>${{t.exit_reason || 'Closed'}}</span><br>
+                                        <b>Net P&L:</b> <span class="${{t.net_pnl >= 0 ? 'text-up' : 'text-down'}}">
+                                            ${{t.net_pnl >= 0 ? '+₹' : '-₹'}}${{Math.abs(t.net_pnl).toFixed(2)}}
+                                        </span>
+                                    </div>
+                                `;
+                            }}).join('');
+                        }}
+
+                    }} catch (e) {{
+                        console.error("Chart data poll error:", e);
+                    }}
+                }}
+
+                // Resize handler
+                window.addEventListener('resize', () => {{
+                    chart.applyOptions({{ width: chartContainer.clientWidth, height: chartContainer.clientHeight }});
+                }});
+
+                // Poll every 1.5 seconds for real-time responsiveness
+                fetchChartData();
+                setInterval(fetchChartData, 1500);
+
+                async function triggerKillSwitch() {{
+                    if (confirm("🚨 Are you sure you want to trigger the EMERGENCY KILL SWITCH?")) {{
+                        await fetch('/api/kill-switch', {{ method: 'POST' }});
+                        location.reload();
+                    }}
+                }}
+
+                async function triggerResume() {{
+                    await fetch('/api/resume', {{ method: 'POST' }});
+                    location.reload();
+                }}
+
+                async function setTargetPts(pts) {{
+                    const msgEl = document.getElementById('target-msg');
+                    if (msgEl) {{
+                        msgEl.innerText = 'Updating target to +' + pts + ' pts on Kite...';
+                        msgEl.style.color = '#f57c00';
+                    }}
+                    try {{
+                        const res = await fetch('/api/update-target', {{
+                            method: 'POST',
+                            headers: {{ 'Content-Type': 'application/json' }},
+                            body: JSON.stringify({{ target_pts: parseFloat(pts) }})
+                        }});
+                        const data = await res.json();
+                        if (msgEl) {{
+                            msgEl.innerText = data.message || 'Target updated!';
+                            msgEl.style.color = res.ok ? '#089981' : '#f23645';
+                        }}
+                        fetchChartData();
+                    }} catch (e) {{
+                        if (msgEl) {{
+                            msgEl.innerText = 'Error: ' + e;
+                            msgEl.style.color = '#f23645';
+                        }}
+                    }}
+                }}
+
+                async function applyCustomTarget() {{
+                    const input = document.getElementById('custom-target-input');
+                    if (input && input.value) {{
+                        await setTargetPts(parseFloat(input.value));
+                    }}
+                }}
+            </script>
+        </body>
+        </html>
+        """
+        return HTMLResponse(content=html)
+
+    @app.get("/api/chart-data")
+    def api_chart_data():
+        if not bot_controller or not hasattr(bot_controller, "get_chart_data"):
+            return JSONResponse({"candles": [], "structure": {}, "active_trade": None, "heavyweights": {}})
+        return JSONResponse(bot_controller.get_chart_data())
+
+    @app.get("/api/status")
+    def api_status():
+        if not bot_controller:
+            return JSONResponse({"status": "starting"})
+        return bot_controller.get_runtime_status()
+
+    @app.get("/api/analytics")
+    def api_analytics():
+        return analytics.generate_report()
+
+    @app.post("/api/kill-switch")
+    def api_kill_switch():
+        if bot_controller:
+            bot_controller.emergency_freeze("Manual operator kill switch triggered via Admin API")
+            return {"status": "SUCCESS", "message": "Emergency trading freeze activated."}
+        raise HTTPException(status_code=500, detail="Bot controller not initialized")
+
+    @app.post("/api/resume")
+    def api_resume():
+        if bot_controller:
+            bot_controller.clear_freeze()
+            return {"status": "SUCCESS", "message": "Trading resumed by operator."}
+        raise HTTPException(status_code=500, detail="Bot controller not initialized")
+
+    @app.post("/api/update-target")
+    def api_update_target(payload: Dict[str, Any]):
+        if not bot_controller or not hasattr(bot_controller, "update_active_trade_target"):
+            raise HTTPException(status_code=500, detail="Bot controller not initialized")
+        try:
+            pts = float(payload.get("target_pts", 0))
+            if pts <= 0:
+                raise HTTPException(status_code=400, detail="Target points must be strictly positive (> 0)")
+            ok, msg = bot_controller.update_active_trade_target(pts)
+            if ok:
+                return {"status": "SUCCESS", "message": msg, "target_pts": pts}
+            else:
+                raise HTTPException(status_code=400, detail=msg)
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid request: {e}")
+
+    return app

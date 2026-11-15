@@ -1,0 +1,16 @@
+trade_id,date,entry_time,exit_time,direction,setup,confidence,entry_spot,entry_opt,exit_opt,pts_pnl,gross_pnl,charges,net_pnl,post_high,additional_pts,reached_5,reached_7,reached_10,reached_15,result
+TRD_01,2026-11-09,09:40,09:41,BUY PE,VWAP Rejection,74.0,24888.8,134.65,137.6,2.95,191.75,63.85,127.9,141.63,3.98,True,False,False,False,WIN
+TRD_02,2026-11-09,10:43,10:44,BUY PE,Breakout and Retest,79.0,24855.1,134.65,137.6,2.95,191.75,63.85,127.9,142.82,5.17,True,True,False,False,WIN
+TRD_03,2026-11-09,13:15,13:16,BUY PE,Opening-Range Breakout,79.0,24891.85,134.65,137.6,2.95,191.75,63.85,127.9,156.78,19.12,True,True,True,True,WIN
+TRD_04,2026-11-09,14:16,14:17,BUY CE,Trend Continuation,72.0,25016.65,134.65,137.6,2.95,191.75,63.85,127.9,145.47,7.82,True,True,True,False,WIN
+TRD_05,2026-11-11,09:36,09:37,BUY CE,Opening-Range Breakout,77.0,25390.6,134.65,137.6,2.95,191.75,63.85,127.9,151.52,13.88,True,True,True,True,WIN
+TRD_06,2026-11-11,09:43,09:45,BUY CE,Breakout and Retest,76.0,25411.55,134.65,137.6,2.95,191.75,63.85,127.9,141.05,3.4,True,False,False,False,WIN
+TRD_07,2026-11-11,09:56,09:57,BUY PE,VWAP Rejection,72.0,25360.1,134.65,137.6,2.95,191.75,63.85,127.9,150.72,13.07,True,True,True,True,WIN
+TRD_08,2026-11-11,13:32,13:33,BUY PE,Trend Continuation,76.0,25229.0,134.65,137.6,2.95,191.75,63.85,127.9,167.8,30.15,True,True,True,True,WIN
+TRD_09,2026-11-11,14:17,14:19,BUY PE,Trend Continuation,76.0,25211.75,134.65,137.6,2.95,191.75,63.85,127.9,149.4,11.75,True,True,True,False,WIN
+TRD_10,2026-11-12,09:51,09:52,BUY CE,Trend Continuation,76.0,25345.45,134.65,137.6,2.95,191.75,63.85,127.9,154.32,16.67,True,True,True,True,WIN
+TRD_11,2026-11-13,09:37,09:38,BUY CE,Trend Continuation,72.0,25192.25,134.65,129.6,-5.05,-328.25,63.1,-391.35,129.6,0.0,False,False,False,False,LOSS
+TRD_12,2026-11-13,09:45,09:46,BUY CE,Opening-Range Breakout,75.0,25192.45,134.65,137.6,2.95,191.75,63.85,127.9,153.13,15.48,True,True,True,True,WIN
+TRD_13,2026-11-13,10:35,10:36,BUY CE,Breakout and Retest,81.0,25217.8,134.65,129.6,-5.05,-328.25,63.1,-391.35,129.6,0.0,False,False,False,False,LOSS
+TRD_14,2026-11-13,10:45,10:46,BUY CE,Breakout and Retest,73.0,25235.05,134.65,137.6,2.95,191.75,63.85,127.9,139.88,2.23,True,False,False,False,WIN
+TRD_15,2026-11-13,14:18,14:20,BUY PE,Breakout and Retest,76.0,25075.05,134.65,137.6,2.95,191.75,63.85,127.9,144.97,7.32,True,True,True,False,WIN

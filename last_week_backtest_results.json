@@ -1,0 +1,44 @@
+{
+  "period": "2026-11-09 to 2026-11-13",
+  "total_trades": 15,
+  "win_rate": 86.67,
+  "net_pnl": 880.0,
+  "gross_pnl": 1836.25,
+  "charges": 956.25,
+  "post_target_milestones": {
+    "plus_5": 86.66666666666667,
+    "plus_7": 66.66666666666666,
+    "plus_10": 60.0,
+    "plus_15": 40.0
+  },
+  "daily_stats": {
+    "2026-11-09": {
+      "trades": 4,
+      "wins": 4,
+      "losses": 0,
+      "gross_pnl": 767.0,
+      "net_pnl": 511.6
+    },
+    "2026-11-11": {
+      "trades": 5,
+      "wins": 5,
+      "losses": 0,
+      "gross_pnl": 958.75,
+      "net_pnl": 639.5
+    },
+    "2026-11-12": {
+      "trades": 1,
+      "wins": 1,
+      "losses": 0,
+      "gross_pnl": 191.75,
+      "net_pnl": 127.9
+    },
+    "2026-11-13": {
+      "trades": 5,
+      "wins": 3,
+      "losses": 2,
+      "gross_pnl": -81.25,
+      "net_pnl": -399.0000000000001
+    }
+  }
+}
