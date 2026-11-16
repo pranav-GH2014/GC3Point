@@ -345,14 +345,15 @@ class NiftyTradingBot:
             decision.duplicate_merged, decision.contributing_strategies
         )
 
-        # Select Option Contract (ATM or ITM_1 per config)
-        contract = self._select_contract_for_signal(direction)
-        if not contract:
-            logger.warning("[CONTRACT SELECTION FAILED] Could not select contract for %s", direction)
-            return
-
         # Capital & Lot Affordability Verification (Checked against live Kite balance)
         available_cap = self.get_live_capital()
+
+        # Select Option Contract (ATM or nearest affordable OTM satisfying available balance)
+        contract = self._select_contract_for_signal(direction, available_capital=available_cap)
+        if not contract:
+            logger.warning("[CONTRACT SELECTION FAILED] Could not select affordable contract for %s", direction)
+            return
+
         affordable, lot_size, aff_msg = self.risk_manager.verify_affordability(
             available_capital=available_cap,
             option_premium=contract["ltp"],
@@ -388,7 +389,7 @@ class NiftyTradingBot:
         # Execute BUY Order
         self._execute_entry(contract, setup_name, conf_score, target_pts=decision.target_pts)
 
-    def _select_contract_for_signal(self, direction: str) -> Optional[Dict[str, Any]]:
+    def _select_contract_for_signal(self, direction: str, available_capital: Optional[float] = None) -> Optional[Dict[str, Any]]:
         strike_selection = getattr(self.config, "strike_selection", "ATM")
         if self.config.simulation_mode:
             # Paper mode: generate contract specifications
@@ -415,14 +416,14 @@ class NiftyTradingBot:
             }
 
         # LIVE MODE: Query candidate contracts dynamically and fetch their live quotes
-        candidates = self.option_selector.get_candidates(direction, self.latest_nifty_spot, limit=6)
+        candidates = self.option_selector.get_candidates(direction, self.latest_nifty_spot, limit=12)
         if not candidates:
             logger.warning("[OPTION SELECTOR] No candidate contracts found in cache for %s near %.1f", direction, self.latest_nifty_spot)
             return None
 
         symbols = [f"NFO:{c['tradingsymbol']}" for c in candidates]
         quotes = self.kite_client.get_quote(symbols)
-        return self.option_selector.select_best_contract(direction, self.latest_nifty_spot, quotes)
+        return self.option_selector.select_best_contract(direction, self.latest_nifty_spot, quotes, available_capital=available_capital)
 
     def _execute_entry(self, contract: Dict[str, Any], setup_name: str, confidence_score: float, target_pts: float = 3.0):
         import uuid

@@ -53,9 +53,9 @@ class OptionSelector:
         ]
         return contracts
 
-    def get_candidates(self, direction: str, nifty_spot: float, limit: int = 6) -> List[Dict[str, Any]]:
+    def get_candidates(self, direction: str, nifty_spot: float, limit: int = 12) -> List[Dict[str, Any]]:
         """
-        Returns top candidate option instruments closest to ATM.
+        Returns top candidate option instruments closest to ATM / OTM in trade direction.
         """
         if not self._instruments_cache:
             return []
@@ -79,10 +79,12 @@ class OptionSelector:
         self,
         direction: str,  # 'BULLISH' (CE) or 'BEARISH' (PE)
         nifty_spot: float,
-        quotes: Dict[str, Any]
+        quotes: Dict[str, Any],
+        available_capital: Optional[float] = None
     ) -> Optional[Dict[str, Any]]:
         """
         Dynamically selects the optimal CE/PE contract matching liquidity, spread, and delta criteria.
+        If available_capital is provided, prioritizes the closest strike that is 100% affordable.
         """
         if not self._instruments_cache:
             logger.warning("No option instruments loaded in cache!")
@@ -101,8 +103,7 @@ class OptionSelector:
             logger.error("No valid future expiries found for NIFTY options!")
             return None
 
-        # Expiry selection: If today is expiry day and after 14:00, or if nearest has high theta risk,
-        # can roll to next weekly. Default to nearest valid expiry.
+        # Expiry selection: Default to nearest valid weekly expiry
         target_expiry = valid_expiries[0]
 
         # 2. Filter contracts for target expiry and type
@@ -112,13 +113,12 @@ class OptionSelector:
         ]
 
         # Sort by distance from ATM strike
-        # For CE: ATM or 1 strike OTM/ITM (strike step 50)
         candidates.sort(key=lambda x: abs(x["strike"] - nifty_spot))
 
-        best_contract = None
-        min_score_penalty = float("inf")
+        max_deployable = (available_capital * getattr(self.config.capital, "max_deployment_pct", 0.98)) if (available_capital and available_capital > 0) else None
+        valid_contracts = []
 
-        for inst in candidates[:6]:  # Test top 6 strikes near ATM
+        for inst in candidates[:12]:  # Test top 12 strikes near ATM / OTM
             tradingsymbol = f"NFO:{inst['tradingsymbol']}"
             quote = quotes.get(tradingsymbol)
             if not quote:
@@ -134,6 +134,7 @@ class OptionSelector:
             ltp = quote.get("last_price", 0.0)
             volume = quote.get("volume", 0)
             oi = quote.get("oi", 0)
+            lot_size = int(inst["lot_size"])
 
             # Check premium range
             if not (self.config.option_selector.min_premium <= ltp <= self.config.option_selector.max_premium):
@@ -148,34 +149,53 @@ class OptionSelector:
             if volume < self.config.option_selector.min_volume or oi < self.config.option_selector.min_open_interest:
                 continue
 
-            # Penalty score based on distance from ATM and spread
             strike_dist = abs(inst["strike"] - nifty_spot)
+            lot_cost = round(ltp * lot_size, 2)
+            is_affordable = (max_deployable is None) or (lot_cost <= max_deployable)
+
+            # Penalty score based on distance from ATM and spread
             penalty = strike_dist + (spread * 10.0)
 
-            if penalty < min_score_penalty:
-                min_score_penalty = penalty
-                best_contract = {
-                    "instrument_token": inst["instrument_token"],
-                    "tradingsymbol": inst["tradingsymbol"],
-                    "strike": float(inst["strike"]),
-                    "expiry": str(inst["expiry"]),
-                    "lot_size": int(inst["lot_size"]),  # Dynamic lot size from broker master!
-                    "instrument_type": instrument_type,
-                    "ltp": ltp,
-                    "best_bid": best_bid,
-                    "best_ask": best_ask,
-                    "spread": round(spread, 2),
-                    "volume": volume,
-                    "oi": oi
-                }
+            contract_dict = {
+                "instrument_token": inst["instrument_token"],
+                "tradingsymbol": inst["tradingsymbol"],
+                "strike": float(inst["strike"]),
+                "expiry": str(inst["expiry"]),
+                "lot_size": lot_size,
+                "instrument_type": instrument_type,
+                "ltp": ltp,
+                "lot_cost": lot_cost,
+                "best_bid": best_bid,
+                "best_ask": best_ask,
+                "spread": round(spread, 2),
+                "volume": volume,
+                "oi": oi,
+                "penalty": penalty,
+                "is_affordable": is_affordable
+            }
+            valid_contracts.append(contract_dict)
 
-        if best_contract:
+        if not valid_contracts:
+            logger.warning("No option contract passed liquidity and spread checks for %s near %.1f", direction, nifty_spot)
+            return None
+
+        # Prioritize affordable contracts closest to ATM
+        affordable_contracts = [c for c in valid_contracts if c["is_affordable"]]
+        if affordable_contracts:
+            affordable_contracts.sort(key=lambda x: x["penalty"])
+            best = affordable_contracts[0]
             logger.info(
-                "[OPTION SELECTED] %s (Strike: %.1f, Expiry: %s, LotSize: %d, LTP: ₹%.2f, Spread: ₹%.2f)",
-                best_contract["tradingsymbol"], best_contract["strike"], best_contract["expiry"],
-                best_contract["lot_size"], best_contract["ltp"], best_contract["spread"]
+                "[AFFORDABLE OPTION SELECTED] %s (Strike: %.1f, Expiry: %s, LotSize: %d, LTP: ₹%.2f, Cost: ₹%.2f, Spread: ₹%.2f)",
+                best["tradingsymbol"], best["strike"], best["expiry"],
+                best["lot_size"], best["ltp"], best["lot_cost"], best["spread"]
             )
-        else:
-            logger.warning("No option contract passed liquidity and delta checks for %s near %.1f", direction, nifty_spot)
+            return best
 
-        return best_contract
+        # If none were affordable:
+        valid_contracts.sort(key=lambda x: x["lot_cost"])
+        cheapest = valid_contracts[0]
+        logger.warning(
+            "[ALL CONTRACTS UNAFFORDABLE] Cannot afford 1 lot with deployable ₹%.2f (Cheapest: %s @ ₹%.2f = ₹%.2f)",
+            max_deployable or 0.0, cheapest["tradingsymbol"], cheapest["ltp"], cheapest["lot_cost"]
+        )
+        return None
