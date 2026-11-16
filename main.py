@@ -577,7 +577,7 @@ class NiftyTradingBot:
             logger.critical("[EXIT ORDER WARNING] Failed to place initial target order: %s", sell_msg)
 
     def _manage_open_position(self):
-        """Monitors open position, verifies exit execution, and enforces hard Stop Loss."""
+        """Monitors open position and verifies exit execution (Auto exit strictly at Profit only when SL is disabled)."""
         pos = self.position_tracker.current_position
         if not pos or pos.get("status") != "OPEN":
             return
@@ -585,10 +585,13 @@ class NiftyTradingBot:
         tradingsymbol = pos["tradingsymbol"]
         buy_avg = float(pos.get("buy_avg_price") or pos.get("average_price") or pos.get("buy_price", 0.0))
         target_price = float(pos.get("target_price") or (buy_avg + 3.0))
-        stop_loss_price = float(pos.get("stop_loss_price") or (buy_avg - 5.0))
         filled_qty = int(pos.get("filled_quantity") or pos.get("quantity", 0))
 
-        # In Paper Mode: Check if simulated target OR stop loss hit based on live quotes
+        sl_pts_cfg = getattr(getattr(self.config, "risk", None), "stop_loss_option_points", 0.0) or 0.0
+        sl_disabled = getattr(self.config, "disable_stop_loss", True) or (sl_pts_cfg <= 0.0)
+        stop_loss_price = float(pos.get("stop_loss_price") or (buy_avg - sl_pts_cfg)) if not sl_disabled else None
+
+        # In Paper Mode: Check if simulated target hit based on live quotes (auto exit at profit only)
         if self.config.simulation_mode:
             opt_type = pos.get("option_type") or ("PE" if tradingsymbol.endswith("PE") else "CE")
             entry_spot = float(pos.get("entry_spot") or self.latest_nifty_spot or 25200.0)
@@ -612,8 +615,8 @@ class NiftyTradingBot:
             pos["unrealized_pts"] = round(curr_opt_ltp - buy_avg, 2)
             pos["unrealized_pnl"] = round((curr_opt_ltp - buy_avg) * filled_qty, 2)
 
-            # Check Stop Loss (-5.0 pts)
-            if curr_opt_ltp <= stop_loss_price:
+            # Check Stop Loss ONLY if explicitly enabled (Disabled by default per operator instruction)
+            if not sl_disabled and stop_loss_price is not None and curr_opt_ltp <= stop_loss_price:
                 sell_avg = stop_loss_price
                 gross_pnl = round((sell_avg - buy_avg) * filled_qty, 2)
                 charges = ZerodhaOptionChargesCalculator.calculate(buy_avg, sell_avg, filled_qty)
@@ -621,7 +624,7 @@ class NiftyTradingBot:
                 self._finalize_closed_position(pos, sell_avg, gross_pnl, net_pnl, charges.total_charges, f"Stop Loss Hit (-{buy_avg - sell_avg:.1f} pts) (Paper)")
                 return
 
-            # Check Target (+3.0 pts)
+            # Check Target (+3.0 pts) -> AUTO EXIT AT PROFIT ONLY
             if curr_opt_ltp >= target_price:
                 sell_avg = target_price
                 gross_pnl = round((sell_avg - buy_avg) * filled_qty, 2)
@@ -635,7 +638,7 @@ class NiftyTradingBot:
         try:
             verified_qty, _ = self.exit_manager.get_verified_remaining_long_quantity(tradingsymbol)
             if verified_qty == 0:
-                # Position has closed on broker! Fetch actual trade sell average
+                # Position has closed on broker (Target limit order filled on Kite)!
                 trades = self.kite_client.get_trades()
                 relevant_sell = [t for t in trades if t.get("tradingsymbol") == tradingsymbol and t.get("transaction_type") == "SELL"]
                 sell_avg = relevant_sell[-1].get("average_price", target_price) if relevant_sell else target_price
@@ -647,56 +650,54 @@ class NiftyTradingBot:
                 if pts_diff >= 2.0:
                     exit_reason = f"Target +{pts_diff:.1f} Points Hit on Broker"
                 elif pts_diff <= -3.0:
-                    exit_reason = f"Stop Loss -{abs(pts_diff):.1f} Points Hit on Broker"
+                    exit_reason = f"Manual Exit / SL -{abs(pts_diff):.1f} Points on Broker"
                 else:
                     exit_reason = f"Position Closed on Broker ({'+' if pts_diff >= 0 else ''}{pts_diff:.1f} pts)"
 
                 self._finalize_closed_position(pos, sell_avg, gross_pnl, net_pnl, charges.total_charges, exit_reason)
                 return
 
-            # Position is still open on broker! Check option LTP for Stop Loss (-5.0 pts)
-            token = pos.get("instrument_token")
-            curr_opt_ltp = None
-            if token and token != 999999:
-                try:
-                    q = self.kite_client.get_quote([token])
-                    if q and token in q:
-                        curr_opt_ltp = float(q[token].get("last_price", 0.0))
-                except Exception as e:
-                    logger.debug("Failed to get live quote for open position SL check: %s", e)
+            # If Stop Loss is explicitly enabled, monitor LTP for emergency exit
+            if not sl_disabled and stop_loss_price is not None:
+                token = pos.get("instrument_token")
+                curr_opt_ltp = None
+                if token and token != 999999:
+                    try:
+                        q = self.kite_client.get_quote([token])
+                        if q and token in q:
+                            curr_opt_ltp = float(q[token].get("last_price", 0.0))
+                    except Exception as e:
+                        logger.debug("Failed to get live quote for open position SL check: %s", e)
 
-            if curr_opt_ltp and curr_opt_ltp <= stop_loss_price:
-                logger.warning(
-                    "[STOP LOSS TRIGGERED] %s LTP ₹%.2f dropped below SL ₹%.2f (-%.1f pts). Executing marketable limit exit!",
-                    tradingsymbol, curr_opt_ltp, stop_loss_price, buy_avg - stop_loss_price
-                )
-                # Cancel pending target order first to avoid double-shorting on broker
-                try:
-                    open_orders = self.kite_client.get_orders()
-                    for o in open_orders:
-                        if o.get("tradingsymbol") == tradingsymbol and o.get("transaction_type") == "SELL" and o.get("status") in ("OPEN", "TRIGGER PENDING"):
-                            self.kite_client.cancel_order("regular", o["order_id"])
-                            logger.info("Cancelled pending target order %s before SL exit", o["order_id"])
-                except Exception as e:
-                    logger.warning("Error cancelling target order before SL exit: %s", e)
-
-                # Submit Marketable Limit Order (LTP - 1.5 pts) with tick-size rounding
-                # Comply with Zerodha policy: pure MARKET orders without market protection are rejected on NFO
-                marketable_limit = round(max(0.5, curr_opt_ltp - 1.5), 1)
-                try:
-                    sl_res = self.kite_client.place_order(
-                        variety="regular",
-                        exchange="NFO",
-                        tradingsymbol=tradingsymbol,
-                        transaction_type="SELL",
-                        quantity=verified_qty,
-                        product=pos.get("product", "NRML"),
-                        order_type="LIMIT",
-                        price=marketable_limit
+                if curr_opt_ltp and curr_opt_ltp <= stop_loss_price:
+                    logger.warning(
+                        "[STOP LOSS TRIGGERED] %s LTP ₹%.2f dropped below SL ₹%.2f (-%.1f pts). Executing marketable limit exit!",
+                        tradingsymbol, curr_opt_ltp, stop_loss_price, buy_avg - stop_loss_price
                     )
-                    logger.info("[SL MARKETABLE LIMIT SUBMITTED] %s @ ₹%.2f (Order: %s)", tradingsymbol, marketable_limit, sl_res.get("order_id"))
-                except Exception as e:
-                    logger.critical("[SL ORDER FAILED] Error placing marketable limit exit on Kite: %s", e)
+                    try:
+                        open_orders = self.kite_client.get_orders()
+                        for o in open_orders:
+                            if o.get("tradingsymbol") == tradingsymbol and o.get("transaction_type") == "SELL" and o.get("status") in ("OPEN", "TRIGGER PENDING"):
+                                self.kite_client.cancel_order("regular", o["order_id"])
+                                logger.info("Cancelled pending target order %s before SL exit", o["order_id"])
+                    except Exception as e:
+                        logger.warning("Error cancelling target order before SL exit: %s", e)
+
+                    marketable_limit = round(max(0.5, curr_opt_ltp - 1.5), 1)
+                    try:
+                        sl_res = self.kite_client.place_order(
+                            variety="regular",
+                            exchange="NFO",
+                            tradingsymbol=tradingsymbol,
+                            transaction_type="SELL",
+                            quantity=verified_qty,
+                            product=pos.get("product", "NRML"),
+                            order_type="LIMIT",
+                            price=marketable_limit
+                        )
+                        logger.info("[SL MARKETABLE LIMIT SUBMITTED] %s @ ₹%.2f (Order: %s)", tradingsymbol, marketable_limit, sl_res.get("order_id"))
+                    except Exception as e:
+                        logger.critical("[SL ORDER FAILED] Error placing marketable limit exit on Kite: %s", e)
 
         except Exception as e:
             logger.error("Error monitoring open position: %s", e)
@@ -940,11 +941,18 @@ class NiftyTradingBot:
             opt_type = active_pos.get("option_type") or ("PE" if symbol.endswith("PE") else "CE")
             delta = 0.50
             entry_spot = float(active_pos.get("entry_spot") or self.latest_nifty_spot or (candles[-1]["close"] if candles else 25000.0))
-            sl_pts = getattr(self.config.risk, "stop_loss_option_points", 0.0) or 5.0
-            sl_prem = round(entry_prem - sl_pts, 2)
+            sl_pts_cfg = getattr(getattr(self.config, "risk", None), "stop_loss_option_points", 0.0) or 0.0
+            sl_disabled = getattr(self.config, "disable_stop_loss", True) or (sl_pts_cfg <= 0.0)
+            if sl_disabled:
+                sl_pts = 0.0
+                sl_prem = None
+                spot_sl = None
+            else:
+                sl_pts = sl_pts_cfg
+                sl_prem = round(entry_prem - sl_pts, 2)
+                spot_sl = round(entry_spot - (sl_pts / delta) if opt_type == "CE" else entry_spot + (sl_pts / delta), 2)
 
             spot_target = round(entry_spot + (tgt_pts / delta) if opt_type == "CE" else entry_spot - (tgt_pts / delta), 2)
-            spot_sl = round(entry_spot - (sl_pts / delta) if opt_type == "CE" else entry_spot + (sl_pts / delta), 2)
 
             # Auto-calculate Full Structural Maximum Move (Room to nearest Resistance/Support)
             if opt_type == "CE":

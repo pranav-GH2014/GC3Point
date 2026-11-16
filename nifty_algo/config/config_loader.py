@@ -131,6 +131,8 @@ class AppConfig:
     buy_order_timeout_seconds: int = 30
     re_entry_cooldown_seconds: int = 180
     max_consecutive_losses: int = 3
+    disable_stop_loss: bool = True  # Stop Loss disabled as requested - exit at profit only
+    auto_exit_only_at_profit: bool = True  # Auto exit only at target profit
     capital: CapitalSettings = field(default_factory=CapitalSettings)
     trading_hours: TradingHours = field(default_factory=TradingHours)
     risk: RiskSettings = field(default_factory=RiskSettings)
@@ -225,6 +227,8 @@ class ConfigLoader:
             buy_order_timeout_seconds=int(raw_dict.get("buy_order_timeout_seconds", 30)),
             re_entry_cooldown_seconds=int(raw_dict.get("re_entry_cooldown_seconds", 180)),
             max_consecutive_losses=int(raw_dict.get("max_consecutive_losses", 3)),
+            disable_stop_loss=bool(raw_dict.get("disable_stop_loss", True)),
+            auto_exit_only_at_profit=bool(raw_dict.get("auto_exit_only_at_profit", True)),
             raw_config=raw_dict,
         )
 

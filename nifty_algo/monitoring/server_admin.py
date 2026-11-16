@@ -1000,15 +1000,15 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
                                 activePriceLines.push(maxLine);
                             }}
 
-                            // Draw Red Stop Loss Zone
-                            if (pos.spot_sl != null && !isNaN(pos.spot_sl)) {{
+                            // Draw Red Stop Loss Zone (only if SL is active)
+                            if (pos.spot_sl != null && !isNaN(pos.spot_sl) && Number(pos.sl_pts || 0) > 0) {{
                                 const slLine = candleSeries.createPriceLine({{
                                     price: Number(pos.spot_sl),
                                     color: '#f23645',
                                     lineWidth: 2,
                                     lineStyle: LightweightCharts.LineStyle.Solid,
                                     axisLabelVisible: true,
-                                    title: 'SL -' + Number(pos.sl_pts || 5).toFixed(1) + ' pts',
+                                    title: 'SL -' + Number(pos.sl_pts).toFixed(1) + ' pts',
                                 }});
                                 activePriceLines.push(slLine);
                             }}
@@ -1021,20 +1021,23 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
                             pnlVal.innerText = (isWin ? '+₹' : '-₹') + Math.abs(pos.unrealized_pnl).toFixed(2);
                             pnlVal.className = 'hud-value ' + (isWin ? 'text-up' : 'text-down');
 
+                            const rrLabel = Number(pos.sl_pts || 0) > 0 ? (' | R:R 1:' + (pos.target_pts / pos.sl_pts).toFixed(1)) : ' | Mode: Target Only 🎯';
                             document.getElementById('hud-sub').innerText = 
                                 'Option: ₹' + pos.current_opt_ltp.toFixed(2) + 
                                 ' | Move: ' + (pos.unrealized_pts >= 0 ? '+' : '') + pos.unrealized_pts.toFixed(1) + ' pts' +
-                                ' | Max Room: +' + (pos.max_opt_pts || 0).toFixed(1) + ' pts' +
-                                ' | R:R 1:' + (pos.target_pts / pos.sl_pts).toFixed(1);
+                                ' | Max Room: +' + (pos.max_opt_pts || 0).toFixed(1) + ' pts' + rrLabel;
 
                             const maxRoomLabel = pos.max_opt_pts ? ('+' + pos.max_opt_pts.toFixed(1) + ' pts (@ ' + pos.max_spot_target + ')') : 'N/A';
+                            const slDisplay = (Number(pos.sl_pts || 0) > 0 && pos.sl_premium != null) 
+                                ? ('₹' + Number(pos.sl_premium).toFixed(2) + ' (-' + Number(pos.sl_pts).toFixed(1) + ' pts)') 
+                                : '<b style="color: #26a69a;">DISABLED (Auto-Exit Profit Only 🎯)</b>';
                             posInfo.innerHTML = `
                                 <b>Contract:</b> ${{pos.tradingsymbol}}<br>
                                 <b>Direction:</b> <span class="${{pos.direction=='CE' ? 'text-up' : 'text-down'}}">${{pos.direction}}</span><br>
                                 <b>Entry Premium:</b> ₹${{pos.entry_premium.toFixed(2)}}<br>
                                 <b>Active Target:</b> <b style="color: #089981;">₹${{pos.target_premium.toFixed(2)}} (+${{pos.target_pts.toFixed(1)}} pts)</b><br>
                                 <b>Full Structural Room:</b> <span style="color: #26a69a; font-weight: 600;">${{maxRoomLabel}}</span><br>
-                                <b>Stop Loss:</b> ₹${{pos.sl_premium.toFixed(2)}} (-${{pos.sl_pts.toFixed(1)}} pts)<br>
+                                <b>Stop Loss:</b> ${{slDisplay}}<br>
                                 <b>Live Unrealized:</b> <b class="${{isWin ? 'text-up' : 'text-down'}}">${{isWin ? '+₹' : '-₹'}}${{Math.abs(pos.unrealized_pnl).toFixed(2)}}</b>
                                 
                                 <hr style="border: 0; border-top: 1px solid #2a2e39; margin: 10px 0;">
