@@ -62,7 +62,13 @@ class MockBotController:
             },
             "recent_trades": [
                 {"tradingsymbol": "NIFTY26NOV25000CE", "option_type": "CE", "net_pnl": 195.0, "exit_reason": "Target Hit"}
-            ]
+            ],
+            "oi_intel": {
+                "has_data": True,
+                "pcr": 1.15,
+                "call_wall": {"strike": 25200.0, "oi": 5000000, "oi_formatted": "50.0 L", "prediction": "WILL_CROSS", "confidence": 85},
+                "put_wall": {"strike": 25000.0, "oi": 6000000, "oi_formatted": "60.0 L", "prediction": "BOUNCE_EXPECTED", "confidence": 80}
+            }
         }
 
     def update_active_trade_target(self, new_target_pts: float):
@@ -122,6 +128,7 @@ def test_admin_chart_api_endpoint(tmp_path):
     assert "LightweightCharts" in body_str
     assert "hud-pnl" in body_str
     assert "spot-price" in body_str
+    assert "oi-radar-pill" in body_str
     assert "Logout" in body_str
 
     # 4. Test GET /api/chart-data with auth
@@ -134,6 +141,8 @@ def test_admin_chart_api_endpoint(tmp_path):
     assert data["active_trade"]["target_pts"] == 15.0
     assert data["active_trade"]["unrealized_pnl"] == 520.0
     assert data["heavyweights"]["is_bullish_aligned"] is True
+    assert "oi_intel" in data
+    assert data["oi_intel"]["call_wall"]["prediction"] == "WILL_CROSS"
 
     # 5. Test POST /api/update-target (synchronous)
     update_fn = routes["/api/update-target"]

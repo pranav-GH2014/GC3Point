@@ -149,6 +149,11 @@ class NiftyTradingBot:
         self.latest_nifty_spot = 0.0
         self.session_data: Dict[str, Any] = {}
 
+        # Open Interest Intelligence & Cross Indicator
+        self.latest_oi_intel: Optional[Dict[str, Any]] = None
+        self._last_oi_fetch_time: float = 0.0
+        self._oi_baseline_cache: Dict[str, float] = {}
+
     def start(self):
         logger.info("=" * 70)
         mode_str = "LIVE REAL MONEY" if not self.config.simulation_mode else "PAPER / DRY-RUN (Default Safe)"
@@ -647,6 +652,58 @@ class NiftyTradingBot:
             "open_position": self.position_tracker.current_position,
         }
 
+    def _refresh_oi_intel(self, force: bool = False) -> Dict[str, Any]:
+        """
+        Fetches quotes for active weekly ATM ± 8 strikes from Kite (or generates fallback),
+        computes Open Interest Walls (Call Wall / Put Wall) and predictive Cross / Bounce indicators.
+        Throttled to run at most once every 10 seconds to respect API limits.
+        """
+        now = time.time()
+        if not force and self.latest_oi_intel and (now - self._last_oi_fetch_time) < 10.0:
+            return self.latest_oi_intel
+
+        spot = self.latest_nifty_spot or 25000.0
+        hw_eval = self.heavyweight_engine.evaluate() if self.heavyweight_engine else None
+
+        chain_data = []
+        try:
+            contracts = self.option_selector.get_active_expiry_contracts(spot, num_strikes=8)
+            if contracts and self.kite_client:
+                symbols = [f"NFO:{c['tradingsymbol']}" for c in contracts]
+                quotes = self.kite_client.get_quote(symbols)
+                for c in contracts:
+                    sym = f"NFO:{c['tradingsymbol']}"
+                    q = quotes.get(sym, {})
+                    cur_oi = float(q.get("oi", 0))
+                    ltp = float(q.get("last_price", 0.0))
+                    ohlc = q.get("ohlc", {})
+                    prev_close = float(ohlc.get("close", ltp))
+                    price_chg = ltp - prev_close
+
+                    base_oi = self._oi_baseline_cache.get(sym)
+                    if base_oi is None:
+                        self._oi_baseline_cache[sym] = cur_oi
+                        oi_change = 0.0
+                    else:
+                        oi_change = cur_oi - base_oi
+
+                    chain_data.append({
+                        "tradingsymbol": c["tradingsymbol"],
+                        "strike": float(c["strike"]),
+                        "instrument_type": c["instrument_type"],
+                        "oi": cur_oi,
+                        "oi_change": oi_change,
+                        "ltp": ltp,
+                        "price_change": price_chg
+                    })
+        except Exception as e:
+            logger.debug("Live OI quote fetch info: %s", e)
+
+        oi_analysis = OpenInterestAnalyzer.calculate_oi_walls(chain_data, spot, hw_eval)
+        self.latest_oi_intel = oi_analysis
+        self._last_oi_fetch_time = now
+        return oi_analysis
+
     def get_chart_data(self) -> Dict[str, Any]:
         """Provides structured real-time data for the TradingView-style automatic visualizer."""
         df_1m = self.nifty_aggregator.get_dataframe("1m")
@@ -768,7 +825,8 @@ class NiftyTradingBot:
                 "stocks": hw_eval.details if hw_eval else {}
             },
             "active_trade": pos_data,
-            "recent_trades": recent_trades
+            "recent_trades": recent_trades,
+            "oi_intel": self._refresh_oi_intel()
         }
 
     def stop(self, reason: str = "Operator signal"):

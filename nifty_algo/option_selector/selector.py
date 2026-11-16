@@ -27,6 +27,32 @@ class OptionSelector:
         self._last_instruments_fetch = date.today()
         logger.info("Updated option instruments cache. Total NIFTY option contracts: %d", len(self._instruments_cache))
 
+    def get_active_expiry_contracts(self, nifty_spot: float, num_strikes: int = 8) -> List[Dict[str, Any]]:
+        """
+        Returns active weekly expiry CE & PE contracts within ±(num_strikes * 50) points of spot.
+        Used for OI wall analytics and breakout/bounce predictions.
+        """
+        if not self._instruments_cache:
+            return []
+
+        today = date.today()
+        valid_expiries = sorted(list(set(
+            inst["expiry"] for inst in self._instruments_cache
+            if inst["expiry"] >= today
+        )))
+
+        if not valid_expiries:
+            return []
+
+        target_expiry = valid_expiries[0]
+        max_dist = num_strikes * 50.0
+
+        contracts = [
+            inst for inst in self._instruments_cache
+            if inst["expiry"] == target_expiry and abs(inst["strike"] - nifty_spot) <= max_dist
+        ]
+        return contracts
+
     def select_best_contract(
         self,
         direction: str,  # 'BULLISH' (CE) or 'BEARISH' (PE)

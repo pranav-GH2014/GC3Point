@@ -472,6 +472,10 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
                     <span class="badge {'badge-frozen' if is_frozen else 'badge-active'}">{'FROZEN' if is_frozen else 'ACTIVE'}</span>
                 </div>
                 <div style="display: flex; align-items: center; gap: 12px;">
+                    <div id="oi-radar-pill" class="radar-pill" style="border-color: #673ab7; background: rgba(103, 58, 183, 0.1);">
+                        <span>📊 OI Radar:</span>
+                        <span id="oi-radar-text" style="color: #ff9800; font-weight: 700;">Scanning Option Chain...</span>
+                    </div>
                     <div id="radar-pill" class="radar-pill">
                         <span>📡 Heavyweights:</span>
                         <span id="radar-text" style="color: #22ab94;">Scanning Big 3...</span>
@@ -515,6 +519,30 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
                             <div class="stat-card">
                                 <div class="stat-lbl">3-Loss Cap</div>
                                 <div class="stat-num" id="loss-cap">{consecutive_losses} / 3</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="panel">
+                        <div class="panel-title" style="display: flex; justify-content: space-between;">
+                            <span>OI Walls & Cross Predictor</span>
+                            <span id="oi-pcr-badge" style="color: #26a69a; font-weight: bold;">PCR: --</span>
+                        </div>
+                        <div style="font-size: 12px; line-height: 1.5;">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                                <span style="color: #ff5252; font-weight: 600;">🔴 Call Wall (Res):</span>
+                                <span id="oi-call-wall" style="font-weight: bold; color: #d1d4dc;">--</span>
+                            </div>
+                            <div id="oi-call-status" style="font-size: 11px; padding: 4px 8px; border-radius: 4px; background: #131722; margin-bottom: 8px; border-left: 3px solid #ff5252; color: #9598a1;">
+                                Awaiting Call Wall analysis...
+                            </div>
+
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                                <span style="color: #00b0ff; font-weight: 600;">🟢 Put Wall (Sup):</span>
+                                <span id="oi-put-wall" style="font-weight: bold; color: #d1d4dc;">--</span>
+                            </div>
+                            <div id="oi-put-status" style="font-size: 11px; padding: 4px 8px; border-radius: 4px; background: #131722; margin-bottom: 4px; border-left: 3px solid #00b0ff; color: #9598a1;">
+                                Awaiting Put Floor analysis...
                             </div>
                         </div>
                     </div>
@@ -637,6 +665,68 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
                                 }});
                                 activePriceLines.push(line);
                             }});
+                        }}
+
+                        // 2.5 Draw Key Open Interest Walls (Call Wall & Put Wall) + Cross / Bounce Indicator
+                        if (data.oi_intel) {{
+                            const oi = data.oi_intel;
+                            
+                            // Update Top Bar Radar Pill
+                            const oiRadar = document.getElementById('oi-radar-text');
+                            if (oiRadar && oi.call_wall && oi.put_wall) {{
+                                const callBadge = oi.call_wall.prediction === 'WILL_CROSS' ? 'CE CROSS 🚀' : 'CE BOUNCE 🛡️';
+                                const putBadge = oi.put_wall.prediction === 'WILL_BREAK' ? 'PE BREAK ⚠️' : 'PE BOUNCE 🛡️';
+                                oiRadar.innerText = `PCR: ${{oi.pcr}} | ${{oi.call_wall.strike}} (${{callBadge}}) | ${{oi.put_wall.strike}} (${{putBadge}})`;
+                                oiRadar.style.color = (oi.pcr > 1.1) ? '#26a69a' : (oi.pcr < 0.9 ? '#ff5252' : '#ff9800');
+                            }}
+
+                            // Update Sidebar OI Panel
+                            const pcrEl = document.getElementById('oi-pcr-badge');
+                            if (pcrEl) pcrEl.innerText = `PCR: ${{oi.pcr || '--'}}`;
+
+                            if (oi.call_wall) {{
+                                const cw = oi.call_wall;
+                                const isCross = cw.prediction === 'WILL_CROSS';
+                                const elCall = document.getElementById('oi-call-wall');
+                                if (elCall) elCall.innerText = `${{cw.strike}} (${{cw.oi_formatted}})`;
+                                const elCallSt = document.getElementById('oi-call-status');
+                                if (elCallSt) {{
+                                    elCallSt.innerHTML = `<b style="color: ${{isCross ? '#00e676' : '#ff5252'}};">${{isCross ? 'WILL CROSS! 🚀 Breakout' : 'BOUNCE EXPECTED 🛡️ Rejection'}}</b> (${{cw.confidence}}%)<br><span style="color:#787b86;">${{cw.reason}}</span>`;
+                                }}
+
+                                // Create Chart Price Line for Call Wall
+                                const callWallLine = candleSeries.createPriceLine({{
+                                    price: cw.strike,
+                                    color: isCross ? '#00e676' : '#e91e63',
+                                    lineWidth: 2,
+                                    lineStyle: LightweightCharts.LineStyle.Dashed,
+                                    axisLabelVisible: true,
+                                    title: `🔴 CE ${{cw.strike}} (${{cw.oi_formatted}}) - ${{isCross ? 'WILL CROSS! 🚀' : 'BOUNCE 🛡️'}} (${{cw.confidence}}%)`,
+                                }});
+                                activePriceLines.push(callWallLine);
+                            }}
+
+                            if (oi.put_wall) {{
+                                const pw = oi.put_wall;
+                                const isBreak = pw.prediction === 'WILL_BREAK';
+                                const elPut = document.getElementById('oi-put-wall');
+                                if (elPut) elPut.innerText = `${{pw.strike}} (${{pw.oi_formatted}})`;
+                                const elPutSt = document.getElementById('oi-put-status');
+                                if (elPutSt) {{
+                                    elPutSt.innerHTML = `<b style="color: ${{isBreak ? '#ff5252' : '#00b0ff'}};">${{isBreak ? 'WILL BREAK! ⚠️ Breakdown' : 'BOUNCE EXPECTED 🛡️ Support'}}</b> (${{pw.confidence}}%)<br><span style="color:#787b86;">${{pw.reason}}</span>`;
+                                }}
+
+                                // Create Chart Price Line for Put Wall
+                                const putWallLine = candleSeries.createPriceLine({{
+                                    price: pw.strike,
+                                    color: isBreak ? '#ff5252' : '#00b0ff',
+                                    lineWidth: 2,
+                                    lineStyle: LightweightCharts.LineStyle.Dashed,
+                                    axisLabelVisible: true,
+                                    title: `🟢 PE ${{pw.strike}} (${{pw.oi_formatted}}) - ${{isBreak ? 'WILL BREAK! ⚠️' : 'BOUNCE 🛡️'}} (${{pw.confidence}}%)`,
+                                }});
+                                activePriceLines.push(putWallLine);
+                            }}
                         }}
 
                         // 3. Draw TradingView Long/Short Position Box (Green & Red Zones) & Live HUD
