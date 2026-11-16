@@ -648,8 +648,12 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
                                 }}));
                                 volumeSeries.setData(volData);
 
-                                const latest = cleanCandles[cleanCandles.length - 1];
-                                document.getElementById('spot-price').innerText = '₹' + latest.close.toFixed(2);
+                                const liveSpot = (data.latest_spot != null && !isNaN(data.latest_spot) && Number(data.latest_spot) > 0)
+                                    ? Number(data.latest_spot)
+                                    : (cleanCandles.length > 0 ? cleanCandles[cleanCandles.length - 1].close : null);
+                                if (liveSpot != null) {{
+                                    document.getElementById('spot-price').innerText = '₹' + liveSpot.toFixed(2);
+                                }}
                             }}
                         }}
 

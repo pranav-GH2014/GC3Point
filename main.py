@@ -723,6 +723,32 @@ class NiftyTradingBot:
                     "close": round(float(r["close"]), 2),
                     "volume": float(r.get("volume", 0) or 0)
                 }
+
+        # Seamlessly include the actively forming 1m candle so the live chart ticks dynamically
+        forming = self.nifty_aggregator.forming_candles.get("1m")
+        if forming and forming.get("date"):
+            f_dt = forming["date"]
+            f_t_sec = int(f_dt.timestamp()) if hasattr(f_dt, "timestamp") else int(time.time())
+            f_close = float(self.latest_nifty_spot or forming.get("close") or 0.0)
+            f_open = float(forming.get("open", f_close))
+            f_high = max(float(forming.get("high", f_close)), f_close)
+            f_low = min(float(forming.get("low", f_close)), f_close)
+            candles_dict[f_t_sec] = {
+                "time": f_t_sec,
+                "open": round(f_open, 2),
+                "high": round(f_high, 2),
+                "low": round(f_low, 2),
+                "close": round(f_close, 2),
+                "volume": float(forming.get("volume", 0) or 0)
+            }
+        elif self.latest_nifty_spot and candles_dict:
+            # Fallback: update latest candle with current spot
+            latest_t = max(candles_dict.keys())
+            spot_val = float(self.latest_nifty_spot)
+            candles_dict[latest_t]["close"] = round(spot_val, 2)
+            candles_dict[latest_t]["high"] = max(candles_dict[latest_t]["high"], round(spot_val, 2))
+            candles_dict[latest_t]["low"] = min(candles_dict[latest_t]["low"], round(spot_val, 2))
+
         candles = [candles_dict[t] for t in sorted(candles_dict.keys())][-150:]
 
         structure = {}
