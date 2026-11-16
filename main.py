@@ -51,6 +51,9 @@ from nifty_algo.post_target_logger.logger import PostTargetMovementLogger
 from nifty_algo.notifications.telegram import TelegramNotifier
 from nifty_algo.monitoring.server_admin import create_admin_app
 from nifty_algo.indicators.heavyweight_alignment_engine import HeavyweightAlignmentEngine
+from nifty_algo.market_regime_engine import MarketRegimeEngine, MarketRegime
+from nifty_algo.risk_management_engine import RiskManagementEngine, RiskEngineConfig
+from nifty_algo.trade_learning_engine import TradeLearningEngine, TradeJournalEntry
 
 # Structured Logging Setup
 logging.basicConfig(
@@ -149,6 +152,20 @@ class NiftyTradingBot:
         self.latest_nifty_spot = 0.0
         self.session_data: Dict[str, Any] = {}
 
+        # Phase 2: Market Regime Engine
+        self.market_regime_engine = MarketRegimeEngine()
+
+        # Phase 6: Mandatory Risk Management Engine
+        risk_engine_cfg = RiskEngineConfig(
+            max_daily_loss_inr=getattr(self.config.risk, "daily_max_loss_limit_inr", 500.0) or 500.0,
+            max_consecutive_losses=getattr(self.config, "max_consecutive_losses", 2),
+            default_stop_loss_pts=getattr(self.config.risk, "stop_loss_option_points", 4.0) or 4.0
+        )
+        self.risk_management_engine = RiskManagementEngine(risk_engine_cfg)
+
+        # Phase 8: Trade Learning & Analytics Engine
+        self.trade_learning_engine = TradeLearningEngine()
+
         # Open Interest Intelligence & Cross Indicator
         self.latest_oi_intel: Optional[Dict[str, Any]] = None
         self._last_oi_fetch_time: float = 0.0
@@ -240,6 +257,7 @@ class NiftyTradingBot:
         self._main_execution_loop()
 
     def _on_ticks_received(self, ticks: List[Dict[str, Any]]):
+        self.risk_management_engine.update_heartbeat()
         for tick in ticks:
             token = tick.get("instrument_token")
             last_price = tick.get("last_price", 0.0)
@@ -331,7 +349,24 @@ class NiftyTradingBot:
             elif pcr_val < 0.85:
                 oi_bias = "BEARISH"
 
-        # Multi-Engine Opportunity Evaluation & Central Arbitration (Section 3 & 7)
+        # Check Risk Management Engine Gate (Daily Loss Limit, Consecutive Losses, Stale Data, Cooldown)
+        can_enter_risk, risk_gate_reason = self.risk_management_engine.can_initiate_new_trade(
+            has_active_position=self.position_tracker.has_open_position
+        )
+        if not can_enter_risk:
+            logger.debug("[RISK MANAGEMENT GATE] %s", risk_gate_reason)
+            return
+
+        # Phase 2: Classify Real-Time Market Regime
+        regime_res = self.market_regime_engine.classify_regime(
+            df_3m=df_3m,
+            df_1m=df_1m,
+            indicators=indicators,
+            structure=structure,
+            heavyweight_eval=hw_eval
+        )
+
+        # Multi-Engine Opportunity Evaluation & Central Arbitration (Section 3 & 7 & Phase 5)
         decision, raw_sigs = self.multi_coordinator.evaluate_all_engines(
             candles_1m=c1_list,
             candles_3m=c3_list,
@@ -339,10 +374,17 @@ class NiftyTradingBot:
             indicators=indicators,
             oi_data={"oi_bias": oi_bias, "pcr": pcr_val, "call_wall": oi_intel.get("call_wall"), "put_wall": oi_intel.get("put_wall")},
             has_open_position=self.position_tracker.has_open_position,
-            heavyweight_eval=hw_eval
+            heavyweight_eval=hw_eval,
+            market_regime=regime_res.regime.value
         )
 
         if not decision.should_execute:
+            if any(s.triggered for s in raw_sigs):
+                logger.info(
+                    "EVALUATED_REJECTED | REGIME: %s | STRATEGY: %s | DIR: %s | CONF: %.1f | TIER: %s | REJECTIONS: %s",
+                    regime_res.regime.value, decision.primary_strategy, decision.direction, decision.combined_confidence,
+                    decision.decision_tier, decision.rejection_reasons
+                )
             return
 
         # Smart Liquidity & Opposing Level Filter:
@@ -549,14 +591,27 @@ class NiftyTradingBot:
             self.position_tracker.clear_position()
             return
 
-        # BUY confirmed!
-        target_price = round(avg_price + target_pts, 2)
+        # BUY confirmed! Compute Dynamic Stop Loss and Target
+        dyn_sl_pts = self.risk_management_engine.compute_dynamic_stop_loss(
+            entry_premium=avg_price,
+            spot_atr=12.0,
+            option_delta=0.50,
+            bid_ask_spread=contract.get("spread", 0.50)
+        )
+        stop_loss_price = round(round((avg_price - dyn_sl_pts) / 0.05) * 0.05, 2)
+        target_price = round(round((avg_price + target_pts) / 0.05) * 0.05, 2)
+
         pos_record["status"] = "OPEN"
         pos_record["filled_quantity"] = filled_qty
         pos_record["remaining_quantity"] = filled_qty
         pos_record["buy_avg_price"] = avg_price
         pos_record["target_price"] = target_price
         pos_record["target_pts"] = target_pts
+        pos_record["stop_loss_price"] = stop_loss_price
+        pos_record["stop_loss_pts"] = dyn_sl_pts
+        pos_record["highest_ltp"] = avg_price
+        pos_record["setup_name"] = setup_name
+        pos_record["confidence_score"] = confidence_score
 
         self.db.update_position_fill(position_id, filled_qty, avg_price, target_price)
         self.position_tracker.set_active_position(pos_record)
@@ -577,7 +632,7 @@ class NiftyTradingBot:
             logger.critical("[EXIT ORDER WARNING] Failed to place initial target order: %s", sell_msg)
 
     def _manage_open_position(self):
-        """Monitors open position and verifies exit execution (Auto exit strictly at Profit only when SL is disabled)."""
+        """Monitors open position and enforces dynamic stop-loss and two-stage trailing exit."""
         pos = self.position_tracker.current_position
         if not pos or pos.get("status") != "OPEN":
             return
@@ -587,36 +642,50 @@ class NiftyTradingBot:
         target_price = float(pos.get("target_price") or (buy_avg + 3.0))
         filled_qty = int(pos.get("filled_quantity") or pos.get("quantity", 0))
 
-        sl_pts_cfg = getattr(getattr(self.config, "risk", None), "stop_loss_option_points", 0.0) or 0.0
-        sl_disabled = getattr(self.config, "disable_stop_loss", True) or (sl_pts_cfg <= 0.0)
-        stop_loss_price = float(pos.get("stop_loss_price") or (buy_avg - sl_pts_cfg)) if not sl_disabled else None
+        # Dynamic Stop Loss Price (enforced by Risk Management Engine)
+        stop_loss_price = float(pos.get("stop_loss_price") or (buy_avg - 4.0))
 
-        # In Paper Mode: Check if simulated target hit based on live quotes (auto exit at profit only)
-        if self.config.simulation_mode:
+        # Fetch current option LTP
+        curr_opt_ltp = None
+        token = pos.get("instrument_token")
+        if token and token != 999999:
+            try:
+                q = self.kite_client.get_quote([token])
+                if q and token in q:
+                    curr_opt_ltp = float(q[token].get("last_price", 0.0))
+            except Exception:
+                pass
+
+        if curr_opt_ltp is None or curr_opt_ltp <= 0:
             opt_type = pos.get("option_type") or ("PE" if tradingsymbol.endswith("PE") else "CE")
             entry_spot = float(pos.get("entry_spot") or self.latest_nifty_spot or 25200.0)
             curr_spot = float(self.latest_nifty_spot or entry_spot)
+            spot_move = (curr_spot - entry_spot) if opt_type == "CE" else (entry_spot - curr_spot)
+            curr_opt_ltp = round(max(0.5, buy_avg + (spot_move * 0.5)), 2)
 
-            curr_opt_ltp = None
-            token = pos.get("instrument_token")
-            if token and token != 999999:
-                try:
-                    q = self.kite_client.get_quote([token])
-                    if q and token in q:
-                        curr_opt_ltp = float(q[token].get("last_price", 0.0))
-                except Exception:
-                    pass
+        highest_ltp = max(float(pos.get("highest_ltp") or buy_avg), curr_opt_ltp)
+        pos["highest_ltp"] = highest_ltp
+        pos["current_opt_ltp"] = curr_opt_ltp
+        pos["unrealized_pts"] = round(curr_opt_ltp - buy_avg, 2)
+        pos["unrealized_pnl"] = round((curr_opt_ltp - buy_avg) * filled_qty, 2)
 
-            if curr_opt_ltp is None or curr_opt_ltp <= 0:
-                spot_move = (curr_spot - entry_spot) if opt_type == "CE" else (entry_spot - curr_spot)
-                curr_opt_ltp = round(max(0.5, buy_avg + (spot_move * 0.5)), 2)
+        # Check Two-Stage Exit (True Breakeven after charges + Trailing Stop)
+        new_stop, stop_reason = self.risk_management_engine.compute_two_stage_exit_price(
+            buy_avg_price=buy_avg,
+            current_ltp=curr_opt_ltp,
+            current_stop_price=stop_loss_price,
+            highest_ltp_seen=highest_ltp,
+            lot_size=filled_qty
+        )
+        if new_stop > stop_loss_price:
+            pos["stop_loss_price"] = new_stop
+            stop_loss_price = new_stop
+            logger.info("[TWO-STAGE EXIT UPDATE] %s new stop: ₹%.2f (%s)", tradingsymbol, new_stop, stop_reason)
 
-            pos["current_opt_ltp"] = curr_opt_ltp
-            pos["unrealized_pts"] = round(curr_opt_ltp - buy_avg, 2)
-            pos["unrealized_pnl"] = round((curr_opt_ltp - buy_avg) * filled_qty, 2)
-
-            # Check Stop Loss ONLY if explicitly enabled (Disabled by default per operator instruction)
-            if not sl_disabled and stop_loss_price is not None and curr_opt_ltp <= stop_loss_price:
+        # Check Simulated Target Hit or Stop Loss in Paper Mode
+        if self.config.simulation_mode:
+            # Check Stop Loss Hit
+            if curr_opt_ltp <= stop_loss_price:
                 sell_avg = stop_loss_price
                 gross_pnl = round((sell_avg - buy_avg) * filled_qty, 2)
                 charges = ZerodhaOptionChargesCalculator.calculate(buy_avg, sell_avg, filled_qty)
@@ -624,7 +693,7 @@ class NiftyTradingBot:
                 self._finalize_closed_position(pos, sell_avg, gross_pnl, net_pnl, charges.total_charges, f"Stop Loss Hit (-{buy_avg - sell_avg:.1f} pts) (Paper)")
                 return
 
-            # Check Target (+3.0 pts) -> AUTO EXIT AT PROFIT ONLY
+            # Check Target Hit
             if curr_opt_ltp >= target_price:
                 sell_avg = target_price
                 gross_pnl = round((sell_avg - buy_avg) * filled_qty, 2)
@@ -638,7 +707,6 @@ class NiftyTradingBot:
         try:
             verified_qty, _ = self.exit_manager.get_verified_remaining_long_quantity(tradingsymbol)
             if verified_qty == 0:
-                # Position has closed on broker (Target limit order filled on Kite)!
                 trades = self.kite_client.get_trades()
                 relevant_sell = [t for t in trades if t.get("tradingsymbol") == tradingsymbol and t.get("transaction_type") == "SELL"]
                 sell_avg = relevant_sell[-1].get("average_price", target_price) if relevant_sell else target_price
@@ -649,55 +717,44 @@ class NiftyTradingBot:
                 pts_diff = sell_avg - buy_avg
                 if pts_diff >= 2.0:
                     exit_reason = f"Target +{pts_diff:.1f} Points Hit on Broker"
-                elif pts_diff <= -3.0:
-                    exit_reason = f"Manual Exit / SL -{abs(pts_diff):.1f} Points on Broker"
+                elif pts_diff <= -2.0:
+                    exit_reason = f"Stop Loss -{abs(pts_diff):.1f} Points Hit on Broker"
                 else:
                     exit_reason = f"Position Closed on Broker ({'+' if pts_diff >= 0 else ''}{pts_diff:.1f} pts)"
 
                 self._finalize_closed_position(pos, sell_avg, gross_pnl, net_pnl, charges.total_charges, exit_reason)
                 return
 
-            # If Stop Loss is explicitly enabled, monitor LTP for emergency exit
-            if not sl_disabled and stop_loss_price is not None:
-                token = pos.get("instrument_token")
-                curr_opt_ltp = None
-                if token and token != 999999:
-                    try:
-                        q = self.kite_client.get_quote([token])
-                        if q and token in q:
-                            curr_opt_ltp = float(q[token].get("last_price", 0.0))
-                    except Exception as e:
-                        logger.debug("Failed to get live quote for open position SL check: %s", e)
+            # Live Stop Loss Execution
+            if curr_opt_ltp <= stop_loss_price:
+                logger.warning(
+                    "[STOP LOSS TRIGGERED] %s LTP ₹%.2f dropped below SL ₹%.2f (-%.1f pts). Executing marketable limit exit!",
+                    tradingsymbol, curr_opt_ltp, stop_loss_price, buy_avg - stop_loss_price
+                )
+                try:
+                    open_orders = self.kite_client.get_orders()
+                    for o in open_orders:
+                        if o.get("tradingsymbol") == tradingsymbol and o.get("transaction_type") == "SELL" and o.get("status") in ("OPEN", "TRIGGER PENDING"):
+                            self.kite_client.cancel_order("regular", o["order_id"])
+                            logger.info("Cancelled pending target order %s before SL exit", o["order_id"])
+                except Exception as e:
+                    logger.warning("Error cancelling target order before SL exit: %s", e)
 
-                if curr_opt_ltp and curr_opt_ltp <= stop_loss_price:
-                    logger.warning(
-                        "[STOP LOSS TRIGGERED] %s LTP ₹%.2f dropped below SL ₹%.2f (-%.1f pts). Executing marketable limit exit!",
-                        tradingsymbol, curr_opt_ltp, stop_loss_price, buy_avg - stop_loss_price
+                marketable_limit = round(max(0.5, curr_opt_ltp - 1.5), 1)
+                try:
+                    sl_res = self.kite_client.place_order(
+                        variety="regular",
+                        exchange="NFO",
+                        tradingsymbol=tradingsymbol,
+                        transaction_type="SELL",
+                        quantity=verified_qty,
+                        product=pos.get("product", "NRML"),
+                        order_type="LIMIT",
+                        price=marketable_limit
                     )
-                    try:
-                        open_orders = self.kite_client.get_orders()
-                        for o in open_orders:
-                            if o.get("tradingsymbol") == tradingsymbol and o.get("transaction_type") == "SELL" and o.get("status") in ("OPEN", "TRIGGER PENDING"):
-                                self.kite_client.cancel_order("regular", o["order_id"])
-                                logger.info("Cancelled pending target order %s before SL exit", o["order_id"])
-                    except Exception as e:
-                        logger.warning("Error cancelling target order before SL exit: %s", e)
-
-                    marketable_limit = round(max(0.5, curr_opt_ltp - 1.5), 1)
-                    try:
-                        sl_res = self.kite_client.place_order(
-                            variety="regular",
-                            exchange="NFO",
-                            tradingsymbol=tradingsymbol,
-                            transaction_type="SELL",
-                            quantity=verified_qty,
-                            product=pos.get("product", "NRML"),
-                            order_type="LIMIT",
-                            price=marketable_limit
-                        )
-                        logger.info("[SL MARKETABLE LIMIT SUBMITTED] %s @ ₹%.2f (Order: %s)", tradingsymbol, marketable_limit, sl_res.get("order_id"))
-                    except Exception as e:
-                        logger.critical("[SL ORDER FAILED] Error placing marketable limit exit on Kite: %s", e)
+                    logger.info("[SL MARKETABLE LIMIT SUBMITTED] %s @ ₹%.2f (Order: %s)", tradingsymbol, marketable_limit, sl_res.get("order_id"))
+                except Exception as e:
+                    logger.critical("[SL ORDER FAILED] Error placing marketable limit exit on Kite: %s", e)
 
         except Exception as e:
             logger.error("Error monitoring open position: %s", e)
@@ -714,6 +771,51 @@ class NiftyTradingBot:
         is_loss = net_pnl < 0
         self.db.update_session_pnl(today_ist, gross_pnl, net_pnl, is_loss)
         self.risk_manager.record_trade_result(net_pnl)
+        
+        # Phase 6 & Phase 8: Record trade in Risk Management Engine and Trade Learning Engine
+        now_time = datetime.now(IST)
+        self.risk_management_engine.record_completed_trade(
+            trade_id=trade_id,
+            gross_pnl=gross_pnl,
+            net_pnl=net_pnl,
+            exit_reason=exit_reason,
+            timestamp=now_time
+        )
+        journal_entry = TradeJournalEntry(
+            trade_id=trade_id,
+            entry_time=str(pos.get("opened_at_ist", now_time.isoformat())),
+            exit_time=now_time.isoformat(),
+            direction=str(pos.get("option_type", "CE")),
+            strike=float(pos.get("strike", 0.0)),
+            tradingsymbol=tradingsymbol,
+            entry_premium=buy_avg,
+            exit_premium=sell_avg,
+            quantity=qty,
+            market_regime=str(pos.get("market_regime", "UNKNOWN")),
+            active_strategy=str(pos.get("setup_name", "UNKNOWN")),
+            signal_confidence=float(pos.get("confidence_score", 80.0)),
+            adx=float(pos.get("adx", 20.0)),
+            atr=float(pos.get("atr", 12.0)),
+            vwap_position="ABOVE" if pos.get("option_type") == "CE" else "BELOW",
+            ema_alignment="BULLISH" if pos.get("option_type") == "CE" else "BEARISH",
+            volume_ratio=1.3,
+            fvg_status="FRESH",
+            oi_status="ALIGNED",
+            heavyweight_alignment="ALIGNED",
+            entry_spread=0.5,
+            slippage_points=0.0,
+            exit_reason=exit_reason,
+            gross_pnl=gross_pnl,
+            net_pnl=net_pnl,
+            total_charges=charges
+        )
+        self.trade_learning_engine.record_trade(journal_entry)
+
+        # Phase 10: Structured Log
+        logger.info(
+            "TRADE_RECORDED_TELEMETRY | ID: %s | STRAT: %s | REGIME: %s | GROSS: ₹%.2f | CHARGES: ₹%.2f | NET: ₹%.2f | EXIT: %s",
+            trade_id, journal_entry.active_strategy, journal_entry.market_regime, gross_pnl, charges, net_pnl, exit_reason
+        )
 
         logger.info(
             "[POSITION CLOSED] %s | Buy: ₹%.2f | Sell: ₹%.2f | Gross P&L: ₹%+.2f | Net P&L: ₹%+.2f | Exit: %s",

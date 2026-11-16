@@ -2,16 +2,16 @@ from run_six_engine_comparison import SixEngineBacktestRunner
 from nifty_algo.strategies.signal_arbitration_engine import SignalArbitrationEngine, ArbitratedDecision
 
 class BoosterArbitrator(SignalArbitrationEngine):
-    def arbitrate(self, signals, indicators, has_open_position, current_bar_idx=0):
+    def arbitrate(self, signals, indicators, has_open_position, current_bar_idx=0, **kwargs):
         if has_open_position:
-            return ArbitratedDecision(False, None, 'NONE', [], 0.0, 0.0, 5.0, 3.0, 'Position active', ['REJECTED_OPEN_POSITION_ACTIVE'])
+            return ArbitratedDecision(False, None, 'NONE', [], 0.0, 'REJECT', 0.0, 5.0, 3.0, 'Position active', ['REJECTED_OPEN_POSITION_ACTIVE'])
         
         # Split into primary initiators and secondary boosters
         primary_sigs = [s for s in signals if s.triggered and s.strategy_id in ('ENGINE_1_MOMENTUM', 'ENGINE_4_BREAKOUT')]
         booster_sigs = [s for s in signals if s.triggered and s.strategy_id in ('ENGINE_3_TRAP', 'ENGINE_6_OI_INTEL')]
         
         if not primary_sigs:
-            return ArbitratedDecision(False, None, 'NONE', [], 0.0, 0.0, 5.0, 3.0, 'No primary driver', ['NO_PRIMARY_DRIVER'])
+            return ArbitratedDecision(False, None, 'NONE', [], 0.0, 'REJECT', 0.0, 5.0, 3.0, 'No primary driver', ['NO_PRIMARY_DRIVER'])
         
         # Best primary signal
         primary_sigs.sort(key=lambda s: s.confidence, reverse=True)
@@ -33,7 +33,7 @@ class BoosterArbitrator(SignalArbitrationEngine):
         score = min(99.0, max(0.0, score))
         
         if score < self.min_confidence_threshold:
-            return ArbitratedDecision(False, None, 'NONE', [], score, 0.0, 5.0, 3.0, f'Score {score} < {self.min_confidence_threshold}', ['SCORE_BELOW_THRESHOLD'])
+            return ArbitratedDecision(False, None, 'NONE', [], score, 'REJECT', 0.0, 5.0, 3.0, f'Score {score} < {self.min_confidence_threshold}', ['SCORE_BELOW_THRESHOLD'])
             
         contribs = [best_p.strategy_name] + [b.strategy_name for b in aligned_boosters]
         return ArbitratedDecision(
@@ -42,6 +42,7 @@ class BoosterArbitrator(SignalArbitrationEngine):
             primary_strategy=best_p.strategy_name,
             contributing_strategies=contribs,
             combined_confidence=round(score, 1),
+            decision_tier='QUALIFIED',
             reference_spot=best_p.reference_price,
             stop_loss_pts=best_p.stop_loss_pts,
             target_pts=3.0,

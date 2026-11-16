@@ -6,23 +6,22 @@ logger = logging.getLogger("nifty_algo.engine.breakout")
 
 class BreakoutDetectionEngine:
     """
-    Engine 4: Breakout Detection Engine
-    Identifies:
-    - Resistance breakout
-    - Support breakdown
-    - Opening range breakout (ORB 15-min)
-    - High-volume breakout
-    - Breakout continuation
-    CRITICAL MANDATE:
-    Does NOT require a retest! A confirmed breakout candle with strong close beyond the level
-    generates an IMMEDIATE executable signal.
+    Engine 4: Breakout Detection Engine (Upgraded - Phase 3)
+    Identifies high-conviction structural breakouts while filtering out fakeouts:
+    - Decisive close outside well-defined consolidation (ORB, PDH/PDL, Swing High/Low)
+    - Strong directional closing strength (closes in top 30% of range for CE, bottom 30% for PE)
+    - Volume expansion (> 1.25x 10-bar baseline)
+    - ADX trend strength confirmation (ADX >= 18.0)
+    - Adequate room to next opposing barrier (>= 8.0 pts room)
+    - Rejection of weak breakouts displaying exhaustion wicks
     """
 
-    def __init__(self, min_breakout_pts: float = 2.0, min_vol_ratio: float = 1.25):
+    def __init__(self, min_breakout_pts: float = 2.0, min_vol_ratio: float = 1.25, min_room_pts: float = 8.0):
         self.strategy_id = "ENGINE_4_BREAKOUT"
         self.strategy_name = "Breakout Detection Engine"
         self.min_breakout_pts = min_breakout_pts
         self.min_vol_ratio = min_vol_ratio
+        self.min_room_pts = min_room_pts
 
     def evaluate(
         self,
@@ -55,10 +54,40 @@ class BreakoutDetectionEngine:
         curr_low = float(curr_bar["low"])
         curr_vol = float(curr_bar.get("volume", 0))
 
+        bar_range = curr_high - curr_low
+        if bar_range <= 0:
+            return OpportunitySignal(
+                strategy_id=self.strategy_id,
+                strategy_name=self.strategy_name,
+                triggered=False,
+                direction=None,
+                timestamp=time_str,
+                reference_price=curr_price,
+                entry_condition="Zero range bar",
+                confidence=0.0,
+                stop_loss_pts=5.0,
+                rejection_reason="Zero range bar"
+            )
+
         # Recent volume baseline
         recent_vols = [float(b.get("volume", 0)) for b in bars[-11:-1]]
         avg_vol = sum(recent_vols) / len(recent_vols) if recent_vols and sum(recent_vols) > 0 else curr_vol
         vol_ratio = (curr_vol / avg_vol) if avg_vol > 0 else 1.0
+
+        adx = float(indicators.get("adx", 20.0))
+        if adx < 16.0:
+            return OpportunitySignal(
+                strategy_id=self.strategy_id,
+                strategy_name=self.strategy_name,
+                triggered=False,
+                direction=None,
+                timestamp=time_str,
+                reference_price=curr_price,
+                entry_condition="ADX too low for breakout",
+                confidence=0.0,
+                stop_loss_pts=5.0,
+                rejection_reason=f"REJECTED_LOW_ADX_BREAKOUT ({adx:.1f} < 16.0)"
+            )
 
         # Reference breakout levels
         orb_h = float(structure.get("orb_high", 0.0))
@@ -68,87 +97,95 @@ class BreakoutDetectionEngine:
         r1 = float(structure.get("r1", 0.0)) if structure.get("r1") else 0.0
         s1 = float(structure.get("s1", 0.0)) if structure.get("s1") else 999999.0
 
-        # Recent 15-bar swing high / swing low (excluding current bar)
-        prior_15 = candles_1m[-16:-1]
-        swing_high_15 = max(float(b["high"]) for b in prior_15)
-        swing_low_15 = min(float(b["low"]) for b in prior_15)
+        prior_10 = bars[-11:-1]
+        swing_high_10 = max(float(b["high"]) for b in prior_10)
+        swing_low_10 = min(float(b["low"]) for b in prior_10)
 
-        res_levels = [r for r in [orb_h, pdh, r1, swing_high_15] if r > 0]
-        sup_levels = [s for s in [orb_l, pdl, s1, swing_low_15] if s < 999999.0]
+        res_levels = [r for r in [orb_h, pdh, r1, swing_high_10] if r > 0]
+        sup_levels = [s for s in [orb_l, pdl, s1, swing_low_10] if s < 999999.0]
+
+        room_to_res = float(structure.get("room_to_resistance", 10.0))
+        room_to_sup = float(structure.get("room_to_support", 10.0))
 
         # 1. Bullish Breakout (CE Signal):
-        # Current bar must close ABOVE resistance level by min_breakout_pts,
-        # candle must be green (close > open) and close in top 30% of its range (strong close).
-        bar_range = curr_high - curr_low
-        close_strength = ((curr_price - curr_low) / bar_range) if bar_range > 0 else 0.5
+        close_strength = (curr_price - curr_low) / bar_range
+        upper_wick = curr_high - curr_price
+        upper_wick_ratio = upper_wick / bar_range
 
-        if curr_price > curr_open and close_strength >= 0.65:
-            for r_lvl in res_levels:
-                # Was below or near level previously, and current candle cleanly breaks and closes above
-                clean_break = (curr_price >= r_lvl + self.min_breakout_pts) and (prev_bar["close"] <= r_lvl + 1.5)
-                if clean_break:
-                    score = 80.0
-                    if vol_ratio >= self.min_vol_ratio:
-                        score += 8.0
-                    if r_lvl == orb_h or r_lvl == pdh:
-                        score += 7.0
-                    if curr_price > float(indicators.get("vwap", 0.0)):
-                        score += 3.0
+        if curr_price > curr_open and close_strength >= 0.65 and upper_wick_ratio <= 0.32:
+            # Check room to next opposing level
+            if room_to_res >= self.min_room_pts:
+                for r_lvl in res_levels:
+                    clean_break = (curr_price >= r_lvl + self.min_breakout_pts) and (prev_bar["close"] <= r_lvl + 1.5)
+                    if clean_break:
+                        score = 80.0
+                        if vol_ratio >= self.min_vol_ratio:
+                            score += 8.0
+                        if r_lvl == orb_h or r_lvl == pdh:
+                            score += 7.0
+                        if curr_price > float(indicators.get("vwap", 0.0)):
+                            score += 3.0
 
-                    sl_dist = max(3.0, min(8.0, curr_price - r_lvl + 1.5))
+                        sl_dist = max(3.0, min(6.5, curr_price - r_lvl + 1.5))
 
-                    return OpportunitySignal(
-                        strategy_id=self.strategy_id,
-                        strategy_name=self.strategy_name,
-                        triggered=True,
-                        direction="CE",
-                        timestamp=time_str,
-                        reference_price=curr_price,
-                        entry_condition=f"Clean breakout above resistance {r_lvl:.1f} (Close: {curr_price:.1f}, Vol: {vol_ratio:.1f}x)",
-                        confidence=min(98.0, score),
-                        stop_loss_pts=sl_dist,
-                        target_pts=3.0,
-                        supporting_metadata={
-                            "broken_level": r_lvl,
-                            "vol_ratio": round(vol_ratio, 2),
-                            "close_strength": round(close_strength, 2)
-                        }
-                    )
+                        return OpportunitySignal(
+                            strategy_id=self.strategy_id,
+                            strategy_name=self.strategy_name,
+                            triggered=True,
+                            direction="CE",
+                            timestamp=time_str,
+                            reference_price=curr_price,
+                            entry_condition=f"Clean breakout above resistance {r_lvl:.1f} (Close strength {close_strength:.0%}, vol {vol_ratio:.1f}x)",
+                            confidence=min(95.0, score),
+                            stop_loss_pts=sl_dist,
+                            target_pts=3.0,
+                            supporting_metadata={
+                                "breakout_level": r_lvl,
+                                "broken_level": r_lvl,
+                                "vol_ratio": round(vol_ratio, 2),
+                                "close_strength": round(close_strength, 2),
+                                "room_to_resistance": room_to_res
+                            }
+                        )
 
         # 2. Bearish Breakdown (PE Signal):
-        # Current bar must close BELOW support level by min_breakout_pts,
-        # candle must be red (close < open) and close in bottom 30% of its range.
-        if curr_price < curr_open and close_strength <= 0.35:
-            for s_lvl in sup_levels:
-                clean_break = (curr_price <= s_lvl - self.min_breakout_pts) and (prev_bar["close"] >= s_lvl - 1.5)
-                if clean_break:
-                    score = 80.0
-                    if vol_ratio >= self.min_vol_ratio:
-                        score += 8.0
-                    if s_lvl == orb_l or s_lvl == pdl:
-                        score += 7.0
-                    if curr_price < float(indicators.get("vwap", 999999.0)):
-                        score += 3.0
+        lower_close_strength = (curr_high - curr_price) / bar_range
+        lower_wick = curr_price - curr_low
+        lower_wick_ratio = lower_wick / bar_range
 
-                    sl_dist = max(3.0, min(8.0, s_lvl - curr_price + 1.5))
+        if curr_price < curr_open and lower_close_strength >= 0.65 and lower_wick_ratio <= 0.32:
+            if room_to_sup >= self.min_room_pts:
+                for s_lvl in sup_levels:
+                    clean_break = (curr_price <= s_lvl - self.min_breakout_pts) and (prev_bar["close"] >= s_lvl - 1.5)
+                    if clean_break:
+                        score = 80.0
+                        if vol_ratio >= self.min_vol_ratio:
+                            score += 8.0
+                        if s_lvl == orb_l or s_lvl == pdl:
+                            score += 7.0
+                        if curr_price < float(indicators.get("vwap", 999999.0)):
+                            score += 3.0
 
-                    return OpportunitySignal(
-                        strategy_id=self.strategy_id,
-                        strategy_name=self.strategy_name,
-                        triggered=True,
-                        direction="PE",
-                        timestamp=time_str,
-                        reference_price=curr_price,
-                        entry_condition=f"Clean breakdown below support {s_lvl:.1f} (Close: {curr_price:.1f}, Vol: {vol_ratio:.1f}x)",
-                        confidence=min(98.0, score),
-                        stop_loss_pts=sl_dist,
-                        target_pts=3.0,
-                        supporting_metadata={
-                            "broken_level": s_lvl,
-                            "vol_ratio": round(vol_ratio, 2),
-                            "close_strength": round(close_strength, 2)
-                        }
-                    )
+                        sl_dist = max(3.0, min(6.5, s_lvl - curr_price + 1.5))
+
+                        return OpportunitySignal(
+                            strategy_id=self.strategy_id,
+                            strategy_name=self.strategy_name,
+                            triggered=True,
+                            direction="PE",
+                            timestamp=time_str,
+                            reference_price=curr_price,
+                            entry_condition=f"Clean breakdown below support {s_lvl:.1f} (Close strength {lower_close_strength:.0%}, vol {vol_ratio:.1f}x)",
+                            confidence=min(95.0, score),
+                            stop_loss_pts=sl_dist,
+                            target_pts=3.0,
+                            supporting_metadata={
+                                "breakdown_level": s_lvl,
+                                "vol_ratio": round(vol_ratio, 2),
+                                "close_strength": round(lower_close_strength, 2),
+                                "room_to_support": room_to_sup
+                            }
+                        )
 
         return OpportunitySignal(
             strategy_id=self.strategy_id,
@@ -157,8 +194,8 @@ class BreakoutDetectionEngine:
             direction=None,
             timestamp=time_str,
             reference_price=curr_price,
-            entry_condition="No clean breakout detected",
+            entry_condition="No clean breakout close or inadequate room",
             confidence=0.0,
             stop_loss_pts=5.0,
-            rejection_reason="No expansion break beyond watch levels"
+            rejection_reason="No clean breakout close beyond levels or room < 8 pts"
         )

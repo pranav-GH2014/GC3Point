@@ -54,7 +54,9 @@ class MultiOpportunityCoordinator:
         has_open_position: bool = False,
         bar_idx: int = 0,
         active_engine_mask: Optional[List[str]] = None,
-        heavyweight_eval: Optional[Any] = None
+        heavyweight_eval: Optional[Any] = None,
+        market_regime: Optional[str] = None,
+        spread_pts: float = 0.50
     ) -> Tuple[ArbitratedDecision, List[OpportunitySignal]]:
         """
         Runs the enabled engines and arbitrates the resulting signals.
@@ -98,7 +100,10 @@ class MultiOpportunityCoordinator:
             indicators=indicators,
             has_open_position=has_open_position,
             current_bar_idx=bar_idx,
-            heavyweight_eval=heavyweight_eval
+            heavyweight_eval=heavyweight_eval,
+            market_regime=market_regime,
+            structure=structure,
+            spread_pts=spread_pts
         )
 
         return decision, raw_signals
