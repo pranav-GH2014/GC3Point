@@ -53,6 +53,28 @@ class OptionSelector:
         ]
         return contracts
 
+    def get_candidates(self, direction: str, nifty_spot: float, limit: int = 6) -> List[Dict[str, Any]]:
+        """
+        Returns top candidate option instruments closest to ATM.
+        """
+        if not self._instruments_cache:
+            return []
+        instrument_type = "CE" if direction == "BULLISH" else "PE"
+        today = date.today()
+        valid_expiries = sorted(list(set(
+            inst["expiry"] for inst in self._instruments_cache
+            if inst["expiry"] >= today
+        )))
+        if not valid_expiries:
+            return []
+        target_expiry = valid_expiries[0]
+        candidates = [
+            inst for inst in self._instruments_cache
+            if inst["expiry"] == target_expiry and inst["instrument_type"] == instrument_type
+        ]
+        candidates.sort(key=lambda x: abs(x["strike"] - nifty_spot))
+        return candidates[:limit]
+
     def select_best_contract(
         self,
         direction: str,  # 'BULLISH' (CE) or 'BEARISH' (PE)

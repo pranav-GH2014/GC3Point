@@ -413,21 +413,15 @@ class NiftyTradingBot:
                 "ltp": sim_ltp,
                 "spread": 0.5
             }
-            nifty_spot = self.latest_nifty_spot or 24000.0
-            atm_strike = round(nifty_spot / strike_step) * strike_step
-            opt_type = "CE" if direction == "BULLISH" else "PE"
-            symbol = f"NIFTY_{int(atm_strike)}_{opt_type}"
-            return {
-                "instrument_token": 999999,
-                "tradingsymbol": symbol,
-                "strike": atm_strike,
-                "expiry": "2026-11-26",
-                "lot_size": 65,  # Dynamic lot size from broker master
-                "ltp": 120.0,
-                "spread": 0.5
-            }
 
-        quotes = self.kite_client.get_quote([f"NSE:NIFTY 50"])
+        # LIVE MODE: Query candidate contracts dynamically and fetch their live quotes
+        candidates = self.option_selector.get_candidates(direction, self.latest_nifty_spot, limit=6)
+        if not candidates:
+            logger.warning("[OPTION SELECTOR] No candidate contracts found in cache for %s near %.1f", direction, self.latest_nifty_spot)
+            return None
+
+        symbols = [f"NFO:{c['tradingsymbol']}" for c in candidates]
+        quotes = self.kite_client.get_quote(symbols)
         return self.option_selector.select_best_contract(direction, self.latest_nifty_spot, quotes)
 
     def _execute_entry(self, contract: Dict[str, Any], setup_name: str, confidence_score: float, target_pts: float = 3.0):
