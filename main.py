@@ -943,8 +943,8 @@ class NiftyTradingBot:
                             "top": gap_top,
                             "bottom": gap_bottom,
                             "gap_pts": round(bull_gap, 1),
-                            "color": "#00e676",
-                            "label": f"⚡ BRIGHT GREEN FVG ({gap_bottom:.0f} - {gap_top:.0f})"
+                            "color": "#88E788",
+                            "label": f"⚡ FVG ({gap_bottom:.0f} - {gap_top:.0f})"
                         })
 
         return {

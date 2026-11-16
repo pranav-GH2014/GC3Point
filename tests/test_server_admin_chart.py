@@ -149,3 +149,36 @@ def test_admin_chart_api_endpoint(tmp_path):
     res = update_fn({"target_pts": 8.0}, auth_req)
     assert res["status"] == "SUCCESS"
     assert res["target_pts"] == 8.0
+
+
+def test_paper_trade_bypasses_telegram_auth(tmp_path):
+    import json
+    db_file = str(tmp_path / "test_paper.db")
+    db = DatabaseManager(db_file)
+    bot = MockBotController()
+    # Enable paper trading / simulation mode
+    bot.config.simulation_mode = True
+    app = create_admin_app(bot, db)
+    routes = {r.path: r.endpoint for r in app.routes if hasattr(r, "endpoint")}
+
+    class DummyRequest:
+        def __init__(self):
+            self.cookies = {}
+            self.headers = {}
+
+    unauth_req = DummyRequest()
+
+    # 1. Dashboard / should immediately render dashboard without login
+    dashboard_fn = routes["/"]
+    html_res = dashboard_fn(unauth_req)
+    body_str = html_res.body.decode()
+    assert "LightweightCharts" in body_str
+    assert "PAPER TRADE (NO AUTH)" in body_str
+    assert "Operator Login" not in body_str
+
+    # 2. /api/chart-data should succeed without 401 Unauthorized
+    chart_fn = routes["/api/chart-data"]
+    json_res = chart_fn(unauth_req)
+    data = json.loads(json_res.body.decode())
+    assert data["capital"] == 3971.0
+    assert len(data["candles"]) == 2

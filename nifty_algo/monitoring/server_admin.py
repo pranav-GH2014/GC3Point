@@ -255,11 +255,17 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
     app = FastAPI(title="NIFTY 3-Point Scalper VPS Admin API", version="2.0.0")
     analytics = PostTargetAnalytics(db.db_path)
 
+    def requires_auth(request: Request) -> bool:
+        if bot_controller and hasattr(bot_controller, "config") and getattr(bot_controller.config, "simulation_mode", False):
+            return False  # Bypass Telegram auth completely in paper / simulation mode
+        return not is_authenticated(request)
+
     @app.get("/", response_class=HTMLResponse)
     def dashboard_html(request: Request):
-        if not is_authenticated(request):
+        if requires_auth(request):
             return HTMLResponse(content=render_login_html())
 
+        is_sim = bool(bot_controller and hasattr(bot_controller, "config") and getattr(bot_controller.config, "simulation_mode", False))
         status = bot_controller.get_runtime_status() if bot_controller else {}
         mode = status.get("mode", "UNKNOWN")
         is_frozen = status.get("is_trading_frozen", False)
@@ -480,7 +486,7 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
                         <span>📡 Heavyweights:</span>
                         <span id="radar-text" style="color: #22ab94;">Scanning Big 3...</span>
                     </div>
-                    <a href="/auth/logout" style="background: #2a2e39; border: 1px solid #363c4e; color: #787b86; text-decoration: none; font-size: 11px; font-weight: 600; padding: 6px 12px; border-radius: 6px; transition: 0.2s;" onmouseover="this.style.color='#f23645'" onmouseout="this.style.color='#787b86'">Logout</a>
+                    {f'<span style="background: rgba(136, 231, 136, 0.15); border: 1px solid #88E788; color: #88E788; font-size: 11px; font-weight: 600; padding: 5px 10px; border-radius: 6px;">🔓 PAPER TRADE (NO AUTH)</span>' if is_sim else '<a href="/auth/logout" style="background: #2a2e39; border: 1px solid #363c4e; color: #787b86; text-decoration: none; font-size: 11px; font-weight: 600; padding: 6px 12px; border-radius: 6px; transition: 0.2s;" onmouseover="this.style.color=\\\'#f23645\\\'" onmouseout="this.style.color=\\\'#787b86\\\'">Logout</a>'}
                 </div>
             </div>
 
@@ -495,7 +501,7 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
                         <div style="display: flex; gap: 8px; font-size: 11px; align-items: center; flex-wrap: wrap;">
                             <span style="background: rgba(242, 54, 69, 0.15); border: 1px solid #f23645; color: #ff5252; padding: 2px 8px; border-radius: 4px; font-weight: 600;">🔴 SELL LIQUIDITY: <span id="hdr-sell-liq">--</span></span>
                             <span style="background: rgba(8, 153, 129, 0.15); border: 1px solid #089981; color: #26a69a; padding: 2px 8px; border-radius: 4px; font-weight: 600;">🟢 BUY LIQUIDITY: <span id="hdr-buy-liq">--</span></span>
-                            <span style="background: rgba(0, 230, 118, 0.18); border: 1px solid #00e676; color: #00e676; padding: 2px 8px; border-radius: 4px; font-weight: bold;">⚡ BRIGHT GREEN FVG: <span id="hdr-fvg-text">Scanning...</span></span>
+                            <span style="background: rgba(136, 231, 136, 0.18); border: 1px solid #88E788; color: #88E788; padding: 2px 8px; border-radius: 4px; font-weight: bold;">⚡ FVG: <span id="hdr-fvg-text">Scanning...</span></span>
                         </div>
                         <div style="font-size: 12px; color: #787b86;">
                             Target: <b style="color: #089981;">+3.0 pts</b>
@@ -716,7 +722,7 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
                         }}
                     }}
 
-                    // 3. Draw Bright Neon Green Box for Fair Value Gaps (FVG)
+                    // 3. Draw Light Green (#88E788) Box for Fair Value Gaps (FVG)
                     if (latestFvgZones && latestFvgZones.length > 0) {{
                         latestFvgZones.forEach(fvg => {{
                             const yTop = candleSeries.priceToCoordinate(Number(fvg.top));
@@ -724,23 +730,27 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
                             if (yTop !== null && yBot !== null) {{
                                 const y1 = Math.min(yTop, yBot);
                                 const y2 = Math.max(yTop, yBot);
-                                const boxH = Math.max(12, y2 - y1);
+                                const boxH = Math.max(14, y2 - y1);
 
-                                // Bright Glowing Neon Green Fill
-                                ctx.fillStyle = 'rgba(0, 230, 118, 0.40)';
+                                // Exact Light Green #88E788 Shaded Fill
+                                ctx.fillStyle = 'rgba(136, 231, 136, 0.35)';
                                 ctx.fillRect(0, y1, drawW, boxH);
 
-                                // Bright Neon Green Solid Border
-                                ctx.strokeStyle = '#00e676';
+                                // Exact Light Green #88E788 Solid Border
+                                ctx.strokeStyle = '#88E788';
                                 ctx.lineWidth = 2.0;
                                 ctx.strokeRect(0, y1, drawW, boxH);
 
-                                // Badge
-                                ctx.fillStyle = '#00e676';
-                                ctx.fillRect(15, y1 + 2, 230, 18);
+                                // Middle Right Badge
+                                const badgeWidth = 200;
+                                const badgeX = Math.max(10, drawW - badgeWidth - 30);
+                                const badgeY = y1 + Math.max(2, (boxH - 18) / 2);
+
+                                ctx.fillStyle = '#88E788';
+                                ctx.fillRect(badgeX, badgeY, badgeWidth, 18);
                                 ctx.fillStyle = '#131722';
                                 ctx.font = 'bold 11px sans-serif';
-                                ctx.fillText('⚡ BRIGHT GREEN FVG (' + Number(fvg.bottom).toFixed(0) + ' - ' + Number(fvg.top).toFixed(0) + ')', 20, y1 + 15);
+                                ctx.fillText('⚡ FVG (' + Number(fvg.bottom).toFixed(0) + ' - ' + Number(fvg.top).toFixed(0) + ')', badgeX + 10, badgeY + 13);
                             }}
                         }});
                     }}
@@ -856,7 +866,7 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
                             requestAnimationFrame(renderLiquidityCanvas);
                         }}
 
-                        // 2.3 Store & Draw Bright Green FVG Zones
+                        // 2.3 Store & Draw Light Green (#88E788) FVG Zones
                         latestFvgZones = data.fvg_zones || [];
                         if (data.fvg_zones && data.fvg_zones.length > 0) {{
                             const fvgHdr = document.getElementById('hdr-fvg-text');
@@ -868,11 +878,11 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
                             data.fvg_zones.forEach(f => {{
                                 const fvgLine = candleSeries.createPriceLine({{
                                     price: Number(f.top),
-                                    color: '#00e676',
+                                    color: '#88E788',
                                     lineWidth: 2,
                                     lineStyle: LightweightCharts.LineStyle.Dashed,
                                     axisLabelVisible: true,
-                                    title: '⚡ BRIGHT GREEN FVG ' + Number(f.top).toFixed(0),
+                                    title: '⚡ FVG ' + Number(f.top).toFixed(0),
                                 }});
                                 activePriceLines.push(fvgLine);
                             }});
@@ -1226,7 +1236,7 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
 
     @app.get("/api/chart-data")
     def api_chart_data(request: Request):
-        if not is_authenticated(request):
+        if requires_auth(request):
             raise HTTPException(status_code=401, detail="Unauthorized")
         if not bot_controller or not hasattr(bot_controller, "get_chart_data"):
             return JSONResponse({"candles": [], "structure": {}, "active_trade": None, "heavyweights": {}})
@@ -1248,7 +1258,7 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
 
     @app.post("/api/kill-switch")
     def api_kill_switch(request: Request = None):
-        if request and not is_authenticated(request):
+        if request and requires_auth(request):
             raise HTTPException(status_code=401, detail="Unauthorized")
         if bot_controller:
             bot_controller.emergency_freeze("Manual operator kill switch triggered via Admin API")
@@ -1257,7 +1267,7 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
 
     @app.post("/api/resume")
     def api_resume(request: Request = None):
-        if request and not is_authenticated(request):
+        if request and requires_auth(request):
             raise HTTPException(status_code=401, detail="Unauthorized")
         if bot_controller:
             bot_controller.clear_freeze()
@@ -1266,7 +1276,7 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
 
     @app.post("/api/update-target")
     def api_update_target(payload: Dict[str, Any], request: Request = None):
-        if request and not is_authenticated(request):
+        if request and requires_auth(request):
             raise HTTPException(status_code=401, detail="Unauthorized")
         if not bot_controller or not hasattr(bot_controller, "update_active_trade_target"):
             raise HTTPException(status_code=500, detail="Bot controller not initialized")
