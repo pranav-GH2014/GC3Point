@@ -30,7 +30,9 @@ class MomentumDetectionEngine:
         structure: Dict[str, Any],
         indicators: Dict[str, Any]
     ) -> OpportunitySignal:
-        if len(candles_1m) < 12:
+        # Prioritize 3-minute candles to filter out 1-minute micro-noise and false momentum
+        bars = candles_3m if (candles_3m and len(candles_3m) >= 10) else candles_1m
+        if len(bars) < 10:
             return OpportunitySignal(
                 strategy_id=self.strategy_id,
                 strategy_name=self.strategy_name,
@@ -38,14 +40,14 @@ class MomentumDetectionEngine:
                 direction=None,
                 timestamp="",
                 reference_price=0.0,
-                entry_condition="Insufficient 1m bars",
+                entry_condition="Insufficient bars",
                 confidence=0.0,
                 stop_loss_pts=5.0,
-                rejection_reason="Insufficient history (<12 bars)"
+                rejection_reason="Insufficient history (<10 bars)"
             )
 
-        curr_bar = candles_1m[-1]
-        prev_bar = candles_1m[-2]
+        curr_bar = bars[-1]
+        prev_bar = bars[-2]
         time_str = str(curr_bar.get("date", ""))
         curr_price = float(curr_bar["close"])
         curr_open = float(curr_bar["open"])
@@ -54,7 +56,7 @@ class MomentumDetectionEngine:
         curr_vol = float(curr_bar.get("volume", 0))
 
         # Volume baseline (10-period SMA)
-        recent_vols = [float(b.get("volume", 0)) for b in candles_1m[-11:-1]]
+        recent_vols = [float(b.get("volume", 0)) for b in bars[-11:-1]]
         avg_vol = sum(recent_vols) / len(recent_vols) if recent_vols and sum(recent_vols) > 0 else curr_vol
         vol_ratio = (curr_vol / avg_vol) if avg_vol > 0 else 1.0
 
@@ -77,7 +79,7 @@ class MomentumDetectionEngine:
         body_ratio = body / bar_range
 
         # Recent 10-bar swing extremes (excluding current bar)
-        recent_10 = candles_1m[-11:-1]
+        recent_10 = bars[-11:-1]
         swing_high_10 = max(float(b["high"]) for b in recent_10)
         swing_low_10 = min(float(b["low"]) for b in recent_10)
 

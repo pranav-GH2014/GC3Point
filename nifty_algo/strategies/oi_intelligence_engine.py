@@ -32,7 +32,8 @@ class OIIntelligenceEngine:
         indicators: Dict[str, Any],
         oi_data: Optional[Dict[str, Any]] = None
     ) -> OpportunitySignal:
-        if len(candles_1m) < 5 or not oi_data:
+        bars = candles_3m if (candles_3m and len(candles_3m) >= 5) else candles_1m
+        if len(bars) < 5 or not oi_data:
             return OpportunitySignal(
                 strategy_id=self.strategy_id,
                 strategy_name=self.strategy_name,
@@ -46,7 +47,7 @@ class OIIntelligenceEngine:
                 rejection_reason="Missing OI stream or data"
             )
 
-        curr_bar = candles_1m[-1]
+        curr_bar = bars[-1]
         time_str = str(curr_bar.get("date", ""))
         curr_price = float(curr_bar["close"])
         curr_open = float(curr_bar["open"])

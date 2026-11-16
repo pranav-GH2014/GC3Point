@@ -31,7 +31,8 @@ class RetestDetectionEngine:
         structure: Dict[str, Any],
         indicators: Dict[str, Any]
     ) -> OpportunitySignal:
-        if len(candles_1m) < 4 or not structure:
+        bars = candles_3m if (candles_3m and len(candles_3m) >= 4) else candles_1m
+        if len(bars) < 4 or not structure:
             return OpportunitySignal(
                 strategy_id=self.strategy_id,
                 strategy_name=self.strategy_name,
@@ -45,8 +46,8 @@ class RetestDetectionEngine:
                 rejection_reason="Insufficient data"
             )
 
-        c1 = candles_1m[-2] # prior bar (retest touch)
-        c2 = candles_1m[-1] # current bar (confirmation bounce/rejection)
+        c1 = bars[-2] # prior bar (retest touch)
+        c2 = bars[-1] # current bar (confirmation bounce/rejection)
         time_str = str(c2.get("date", ""))
         curr_price = float(c2["close"])
 

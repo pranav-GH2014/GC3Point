@@ -31,7 +31,8 @@ class BreakoutDetectionEngine:
         structure: Dict[str, Any],
         indicators: Dict[str, Any]
     ) -> OpportunitySignal:
-        if len(candles_1m) < 15 or not structure:
+        bars = candles_3m if (candles_3m and len(candles_3m) >= 10) else candles_1m
+        if len(bars) < 10 or not structure:
             return OpportunitySignal(
                 strategy_id=self.strategy_id,
                 strategy_name=self.strategy_name,
@@ -45,8 +46,8 @@ class BreakoutDetectionEngine:
                 rejection_reason="Insufficient data"
             )
 
-        curr_bar = candles_1m[-1]
-        prev_bar = candles_1m[-2]
+        curr_bar = bars[-1]
+        prev_bar = bars[-2]
         time_str = str(curr_bar.get("date", ""))
         curr_price = float(curr_bar["close"])
         curr_open = float(curr_bar["open"])
@@ -55,7 +56,7 @@ class BreakoutDetectionEngine:
         curr_vol = float(curr_bar.get("volume", 0))
 
         # Recent volume baseline
-        recent_vols = [float(b.get("volume", 0)) for b in candles_1m[-11:-1]]
+        recent_vols = [float(b.get("volume", 0)) for b in bars[-11:-1]]
         avg_vol = sum(recent_vols) / len(recent_vols) if recent_vols and sum(recent_vols) > 0 else curr_vol
         vol_ratio = (curr_vol / avg_vol) if avg_vol > 0 else 1.0
 

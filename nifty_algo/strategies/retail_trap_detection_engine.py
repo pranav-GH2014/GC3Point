@@ -27,7 +27,8 @@ class RetailTrapDetectionEngine:
         indicators: Dict[str, Any],
         oi_data: Optional[Dict[str, Any]] = None
     ) -> OpportunitySignal:
-        if len(candles_1m) < 15:
+        bars = candles_3m if (candles_3m and len(candles_3m) >= 12) else candles_1m
+        if len(bars) < 12:
             return OpportunitySignal(
                 strategy_id=self.strategy_id,
                 strategy_name=self.strategy_name,
@@ -35,14 +36,14 @@ class RetailTrapDetectionEngine:
                 direction=None,
                 timestamp="",
                 reference_price=0.0,
-                entry_condition="Insufficient 1m bars",
+                entry_condition="Insufficient bars",
                 confidence=0.0,
                 stop_loss_pts=5.0,
                 rejection_reason="Insufficient data"
             )
 
-        curr_bar = candles_1m[-1]
-        prev_bar = candles_1m[-2]
+        curr_bar = bars[-1]
+        prev_bar = bars[-2]
         time_str = str(curr_bar.get("date", ""))
         curr_price = float(curr_bar["close"])
         curr_high = float(curr_bar["high"])
@@ -50,7 +51,7 @@ class RetailTrapDetectionEngine:
         curr_open = float(curr_bar["open"])
 
         # Prior 10-bar swing extremes (excluding current and previous sweep bar)
-        prior_bars = candles_1m[-12:-2]
+        prior_bars = bars[-12:-2]
         prior_swing_high = max(float(b["high"]) for b in prior_bars)
         prior_swing_low = min(float(b["low"]) for b in prior_bars)
 

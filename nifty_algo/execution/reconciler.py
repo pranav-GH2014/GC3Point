@@ -85,7 +85,17 @@ class BrokerReconciler:
 
                 logger.info("[RECON MATCH] Active long position on broker: %s (%d units)", tradingsymbol, broker_qty)
                 self.db.record_reconciliation(broker_qty, broker_qty, False, "RECOVERED_ACTIVE_POSITION", broker_pos)
-                return True, f"Recovered active position {tradingsymbol}", broker_pos
+                
+                # Merge broker position with persisted SQLite record for seamless management
+                merged_pos = dict(sqlite_pos) if sqlite_pos else {}
+                merged_pos.update(broker_pos)
+                merged_pos["tradingsymbol"] = tradingsymbol
+                merged_pos["buy_avg_price"] = float(broker_pos.get("average_price") or broker_pos.get("buy_price") or (sqlite_pos.get("buy_avg_price") if sqlite_pos else 0.0))
+                merged_pos["filled_quantity"] = int(broker_qty)
+                merged_pos["remaining_quantity"] = int(broker_qty)
+                merged_pos["status"] = "OPEN"
+                merged_pos["target_price"] = float((sqlite_pos.get("target_price") if sqlite_pos else None) or round(merged_pos["buy_avg_price"] + 3.0, 2))
+                return True, f"Recovered active position {tradingsymbol}", merged_pos
 
             # Case 3: More than 1 open position detected (Strategy violation!)
             msg = f"STRATEGY VIOLATION: Multiple open option positions ({len(live_open_nifty)}) detected on broker!"

@@ -28,7 +28,8 @@ class FVGOpportunityEngine:
         structure: Dict[str, Any],
         indicators: Dict[str, Any]
     ) -> OpportunitySignal:
-        if len(candles_1m) < 6:
+        bars = candles_3m if (candles_3m and len(candles_3m) >= 6) else candles_1m
+        if len(bars) < 6:
             return OpportunitySignal(
                 strategy_id=self.strategy_id,
                 strategy_name=self.strategy_name,
@@ -42,13 +43,13 @@ class FVGOpportunityEngine:
                 rejection_reason="Insufficient data (<6 bars)"
             )
 
-        curr_bar = candles_1m[-1]
+        curr_bar = bars[-1]
         time_str = str(curr_bar.get("date", ""))
         curr_price = float(curr_bar["close"])
 
         # Check the recent 3-candle windows: (c_prev2, c_prev1, curr_bar) and prior
         # Window 1: Immediate FVG formation on the last 3 bars (bars -3, -2, -1)
-        c1, c2, c3 = candles_1m[-3], candles_1m[-2], candles_1m[-1]
+        c1, c2, c3 = bars[-3], bars[-2], bars[-1]
 
         # 1. Bullish FVG: c3 low strictly above c1 high
         bull_gap = float(c3["low"]) - float(c1["high"])

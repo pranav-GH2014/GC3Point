@@ -309,10 +309,11 @@ class NiftyTradingBot:
         df_1m = self.nifty_aggregator.get_dataframe("1m")
         df_3m = self.nifty_aggregator.get_dataframe("3m")
 
-        if len(df_1m) < 20 or len(df_3m) < 10:
+        if len(df_3m) < 10:
             return
 
-        indicators = TechnicalIndicators.analyze_indicators(df_1m)
+        # Prioritize 3-minute dataframe for indicators to eliminate 1m whipsaw and micro-noise
+        indicators = TechnicalIndicators.analyze_indicators(df_3m if len(df_3m) >= 15 else df_1m)
         structure = self.structure_engine.compute_structure(df_1m, df_3m)
 
         c1_list = df_1m.to_dict("records")
@@ -334,6 +335,18 @@ class NiftyTradingBot:
 
         if not decision.should_execute:
             return
+
+        # Strict Room-to-Level Filter: NEVER buy PE into Support or CE into Resistance!
+        if decision.direction == "PE":
+            room_to_sup = float(structure.get("room_to_support", 999.0) or 999.0)
+            if room_to_sup < 15.0:
+                logger.info("[FILTER REJECT] PE opportunity rejected: too close to support (room: %.1f pts < 15 pts)", room_to_sup)
+                return
+        elif decision.direction == "CE":
+            room_to_res = float(structure.get("room_to_resistance", 999.0) or 999.0)
+            if room_to_res < 15.0:
+                logger.info("[FILTER REJECT] CE opportunity rejected: too close to resistance (room: %.1f pts < 15 pts)", room_to_res)
+                return
 
         direction = "BULLISH" if decision.direction == "CE" else "BEARISH"
         setup_name = decision.primary_strategy
@@ -503,9 +516,9 @@ class NiftyTradingBot:
             return
 
         tradingsymbol = pos["tradingsymbol"]
-        buy_avg = pos["buy_avg_price"]
-        target_price = pos["target_price"]
-        filled_qty = pos["filled_quantity"]
+        buy_avg = float(pos.get("buy_avg_price") or pos.get("average_price") or pos.get("buy_price", 0.0))
+        target_price = float(pos.get("target_price") or (buy_avg + 3.0))
+        filled_qty = int(pos.get("filled_quantity") or pos.get("quantity", 0))
 
         # In Paper Mode: Check if simulated target hit
         if self.config.simulation_mode:
@@ -534,6 +547,48 @@ class NiftyTradingBot:
                 net_pnl = round(gross_pnl - charges.total_charges, 2)
 
                 self._finalize_closed_position(pos, sell_avg, gross_pnl, net_pnl, charges.total_charges, "Target +3.0 Points Hit on Broker")
+                return
+
+            # Active Stop Loss Protection (-5.0 option points threshold)
+            sl_pts = getattr(self.config.risk, "stop_loss_option_points", 5.0) or 5.0
+            sl_price = round(buy_avg - sl_pts, 2)
+            try:
+                opt_quote = self.kite_client.get_quote([f"NFO:{tradingsymbol}"])
+                curr_opt_ltp = opt_quote.get(f"NFO:{tradingsymbol}", {}).get("last_price")
+                if curr_opt_ltp and curr_opt_ltp <= sl_price:
+                    logger.warning(
+                        "[STOP LOSS TRIGGERED] %s LTP ₹%.2f dropped below SL ₹%.2f (-%.1f pts). Executing emergency market exit!",
+                        tradingsymbol, curr_opt_ltp, sl_price, sl_pts
+                    )
+                    # 1. Cancel pending target limit order first
+                    conflicting = self.exit_manager.verify_no_conflicting_exit_orders(tradingsymbol)
+                    for ord_id in conflicting:
+                        try:
+                            self.kite_client.cancel_order("regular", ord_id)
+                            logger.info("Cancelled pending target order %s before SL exit", ord_id)
+                        except Exception as ce:
+                            logger.warning("Error cancelling target order %s: %s", ord_id, ce)
+
+                    # 2. Submit immediate marketable LIMIT SELL order (Zerodha NFO disallows MARKET without market protection)
+                    try:
+                        marketable_price = round(round(max(0.5, curr_opt_ltp - 2.0) / 0.05) * 0.05, 2)
+                        sl_order_id = self.kite_client.place_order(
+                            variety="regular",
+                            exchange="NFO",
+                            tradingsymbol=tradingsymbol,
+                            transaction_type="SELL",
+                            quantity=verified_qty,
+                            product=self.config.product_type,
+                            order_type="LIMIT",
+                            price=marketable_price,
+                            tag="EXIT_SL"
+                        )
+                        logger.info("[SL MARKETABLE LIMIT EXIT SUBMITTED] Order ID: %s @ ₹%.2f", sl_order_id, marketable_price)
+                        time.sleep(1.0)
+                    except Exception as oe:
+                        logger.critical("Failed to submit SL market order: %s", oe)
+            except Exception as e:
+                logger.debug("Error checking SL quote: %s", e)
 
         except Exception as e:
             logger.error("Error monitoring open position: %s", e)
