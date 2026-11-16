@@ -334,14 +334,23 @@ class NiftyTradingBot:
         if not decision.should_execute:
             return
 
-        # Strict Room-to-Level Filter: NEVER buy PE into Support or CE into Resistance!
+        # Smart Room-to-Level Filter: Enforce sufficient room to key opposing liquidity
+        is_reversal = decision.primary_strategy in ["ENGINE_2_RETEST", "ENGINE_3_TRAP"]
         if decision.direction == "PE":
             room_to_sup = float(structure.get("room_to_support", 999.0) or 999.0)
+            if is_reversal:
+                major_sup = float(structure.get("cdl") or ((self.latest_nifty_spot or 25200.0) - 50.0))
+                room_to_sup = max(room_to_sup, max(0.0, (self.latest_nifty_spot or 25200.0) - major_sup))
             if room_to_sup < 15.0:
                 logger.info("[FILTER REJECT] PE opportunity rejected: too close to support (room: %.1f pts < 15 pts)", room_to_sup)
                 return
         elif decision.direction == "CE":
             room_to_res = float(structure.get("room_to_resistance", 999.0) or 999.0)
+            if is_reversal:
+                vwap_val = float(indicators.get("vwap") or 0.0)
+                cdh_val = float(structure.get("cdh") or 0.0)
+                major_ceil = max(vwap_val, cdh_val) if max(vwap_val, cdh_val) > (self.latest_nifty_spot or 0.0) else ((self.latest_nifty_spot or 25200.0) + 40.0)
+                room_to_res = max(room_to_res, max(0.0, major_ceil - (self.latest_nifty_spot or 25200.0)))
             if room_to_res < 15.0:
                 logger.info("[FILTER REJECT] CE opportunity rejected: too close to resistance (room: %.1f pts < 15 pts)", room_to_res)
                 return
