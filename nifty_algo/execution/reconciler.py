@@ -94,6 +94,7 @@ class BrokerReconciler:
                 merged_pos["filled_quantity"] = int(broker_qty)
                 merged_pos["remaining_quantity"] = int(broker_qty)
                 merged_pos["status"] = "OPEN"
+                merged_pos["option_type"] = "PE" if tradingsymbol.endswith("PE") else "CE"
                 merged_pos["target_price"] = float((sqlite_pos.get("target_price") if sqlite_pos else None) or round(merged_pos["buy_avg_price"] + 3.0, 2))
                 return True, f"Recovered active position {tradingsymbol}", merged_pos
 

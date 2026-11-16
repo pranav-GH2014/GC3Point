@@ -549,47 +549,6 @@ class NiftyTradingBot:
                 self._finalize_closed_position(pos, sell_avg, gross_pnl, net_pnl, charges.total_charges, "Target +3.0 Points Hit on Broker")
                 return
 
-            # Active Stop Loss Protection (-5.0 option points threshold)
-            sl_pts = getattr(self.config.risk, "stop_loss_option_points", 5.0) or 5.0
-            sl_price = round(buy_avg - sl_pts, 2)
-            try:
-                opt_quote = self.kite_client.get_quote([f"NFO:{tradingsymbol}"])
-                curr_opt_ltp = opt_quote.get(f"NFO:{tradingsymbol}", {}).get("last_price")
-                if curr_opt_ltp and curr_opt_ltp <= sl_price:
-                    logger.warning(
-                        "[STOP LOSS TRIGGERED] %s LTP ₹%.2f dropped below SL ₹%.2f (-%.1f pts). Executing emergency market exit!",
-                        tradingsymbol, curr_opt_ltp, sl_price, sl_pts
-                    )
-                    # 1. Cancel pending target limit order first
-                    conflicting = self.exit_manager.verify_no_conflicting_exit_orders(tradingsymbol)
-                    for ord_id in conflicting:
-                        try:
-                            self.kite_client.cancel_order("regular", ord_id)
-                            logger.info("Cancelled pending target order %s before SL exit", ord_id)
-                        except Exception as ce:
-                            logger.warning("Error cancelling target order %s: %s", ord_id, ce)
-
-                    # 2. Submit immediate marketable LIMIT SELL order (Zerodha NFO disallows MARKET without market protection)
-                    try:
-                        marketable_price = round(round(max(0.5, curr_opt_ltp - 2.0) / 0.05) * 0.05, 2)
-                        sl_order_id = self.kite_client.place_order(
-                            variety="regular",
-                            exchange="NFO",
-                            tradingsymbol=tradingsymbol,
-                            transaction_type="SELL",
-                            quantity=verified_qty,
-                            product=self.config.product_type,
-                            order_type="LIMIT",
-                            price=marketable_price,
-                            tag="EXIT_SL"
-                        )
-                        logger.info("[SL MARKETABLE LIMIT EXIT SUBMITTED] Order ID: %s @ ₹%.2f", sl_order_id, marketable_price)
-                        time.sleep(1.0)
-                    except Exception as oe:
-                        logger.critical("Failed to submit SL market order: %s", oe)
-            except Exception as e:
-                logger.debug("Error checking SL quote: %s", e)
-
         except Exception as e:
             logger.error("Error monitoring open position: %s", e)
 
@@ -828,10 +787,11 @@ class NiftyTradingBot:
             entry_prem = float(active_pos.get("buy_avg_price", 0.0))
             tgt_pts = float(active_pos.get("target_pts", 3.0))
             tgt_prem = float(active_pos.get("target_price", entry_prem + tgt_pts))
-            opt_type = active_pos.get("option_type", "CE")
+            symbol = active_pos.get("tradingsymbol", "")
+            opt_type = active_pos.get("option_type") or ("PE" if symbol.endswith("PE") else "CE")
             delta = 0.50
-            entry_spot = self.latest_nifty_spot or (candles[-1]["close"] if candles else 25000.0)
-            sl_pts = getattr(self.config.risk, "stop_loss_option_points", 5.0) or 5.0
+            entry_spot = float(active_pos.get("entry_spot") or self.latest_nifty_spot or (candles[-1]["close"] if candles else 25000.0))
+            sl_pts = getattr(self.config.risk, "stop_loss_option_points", 0.0) or 5.0
             sl_prem = round(entry_prem - sl_pts, 2)
 
             spot_target = round(entry_spot + (tgt_pts / delta) if opt_type == "CE" else entry_spot - (tgt_pts / delta), 2)
