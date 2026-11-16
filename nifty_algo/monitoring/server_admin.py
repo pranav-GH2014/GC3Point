@@ -266,6 +266,10 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
             return HTMLResponse(content=render_login_html())
 
         is_sim = bool(bot_controller and hasattr(bot_controller, "config") and getattr(bot_controller.config, "simulation_mode", False))
+        if is_sim:
+            auth_badge_html = '<span style="background: rgba(136, 231, 136, 0.15); border: 1px solid #88E788; color: #88E788; font-size: 11px; font-weight: 600; padding: 5px 10px; border-radius: 6px;">🔓 PAPER TRADE (NO AUTH)</span>'
+        else:
+            auth_badge_html = '<a href="/auth/logout" style="background: #2a2e39; border: 1px solid #363c4e; color: #787b86; text-decoration: none; font-size: 11px; font-weight: 600; padding: 6px 12px; border-radius: 6px; transition: 0.2s;">Logout</a>'
         status = bot_controller.get_runtime_status() if bot_controller else {}
         mode = status.get("mode", "UNKNOWN")
         is_frozen = status.get("is_trading_frozen", False)
@@ -486,7 +490,7 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
                         <span>📡 Heavyweights:</span>
                         <span id="radar-text" style="color: #22ab94;">Scanning Big 3...</span>
                     </div>
-                    {f'<span style="background: rgba(136, 231, 136, 0.15); border: 1px solid #88E788; color: #88E788; font-size: 11px; font-weight: 600; padding: 5px 10px; border-radius: 6px;">🔓 PAPER TRADE (NO AUTH)</span>' if is_sim else '<a href="/auth/logout" style="background: #2a2e39; border: 1px solid #363c4e; color: #787b86; text-decoration: none; font-size: 11px; font-weight: 600; padding: 6px 12px; border-radius: 6px; transition: 0.2s;" onmouseover="this.style.color=\\\'#f23645\\\'" onmouseout="this.style.color=\\\'#787b86\\\'">Logout</a>'}
+                    {auth_badge_html}
                 </div>
             </div>
 
