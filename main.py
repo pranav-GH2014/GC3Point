@@ -709,19 +709,20 @@ class NiftyTradingBot:
             df_1m = pd.DataFrame()
             df_3m = pd.DataFrame()
 
-        candles = []
+        candles_dict = {}
         if len(df_1m) > 0:
-            for r in df_1m.tail(150).to_dict("records"):
+            for r in df_1m.tail(200).to_dict("records"):
                 dt = r["date"]
                 t_sec = int(dt.timestamp()) if hasattr(dt, "timestamp") else int(time.time())
-                candles.append({
+                candles_dict[t_sec] = {
                     "time": t_sec,
                     "open": round(float(r["open"]), 2),
                     "high": round(float(r["high"]), 2),
                     "low": round(float(r["low"]), 2),
                     "close": round(float(r["close"]), 2),
-                    "volume": float(r.get("volume", 0))
-                })
+                    "volume": float(r.get("volume", 0) or 0)
+                }
+        candles = [candles_dict[t] for t in sorted(candles_dict.keys())][-150:]
 
         structure = {}
         if len(df_1m) >= 15 and len(df_3m) >= 5:

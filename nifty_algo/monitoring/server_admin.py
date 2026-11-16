@@ -626,16 +626,31 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
 
                         // 1. Update Candlestick & Volume Data
                         if (data.candles && data.candles.length > 0) {{
-                            candleSeries.setData(data.candles);
-                            const volData = data.candles.map(c => ({{
-                                time: c.time,
-                                value: c.volume,
-                                color: c.close >= c.open ? 'rgba(8, 153, 129, 0.4)' : 'rgba(242, 54, 69, 0.4)'
-                            }}));
-                            volumeSeries.setData(volData);
+                            const candleMap = new Map();
+                            data.candles.forEach(c => {{
+                                if (c && c.time && !isNaN(c.time) && c.open != null && c.high != null && c.low != null && c.close != null) {{
+                                    candleMap.set(c.time, {{
+                                        time: Number(c.time),
+                                        open: Number(c.open),
+                                        high: Number(c.high),
+                                        low: Number(c.low),
+                                        close: Number(c.close)
+                                    }});
+                                }}
+                            }});
+                            const cleanCandles = Array.from(candleMap.values()).sort((a, b) => a.time - b.time);
+                            if (cleanCandles.length > 0) {{
+                                candleSeries.setData(cleanCandles);
+                                const volData = cleanCandles.map(c => ({{
+                                    time: c.time,
+                                    value: Number(c.volume || 0),
+                                    color: c.close >= c.open ? 'rgba(8, 153, 129, 0.4)' : 'rgba(242, 54, 69, 0.4)'
+                                }}));
+                                volumeSeries.setData(volData);
 
-                            const latest = data.candles[data.candles.length - 1];
-                            document.getElementById('spot-price').innerText = '₹' + latest.close.toFixed(2);
+                                const latest = cleanCandles[cleanCandles.length - 1];
+                                document.getElementById('spot-price').innerText = '₹' + latest.close.toFixed(2);
+                            }}
                         }}
 
                         clearPriceLines();
@@ -643,27 +658,31 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
                         // 2. Draw Dynamic Support & Resistance Zones
                         if (data.structure) {{
                             (data.structure.supports || []).forEach(s => {{
-                                const line = candleSeries.createPriceLine({{
-                                    price: s,
-                                    color: '#2962ff',
-                                    lineWidth: 1,
-                                    lineStyle: LightweightCharts.LineStyle.Dashed,
-                                    axisLabelVisible: true,
-                                    title: 'SUPPORT ' + s.toFixed(0),
-                                }});
-                                activePriceLines.push(line);
+                                if (s != null && !isNaN(s) && Number(s) > 0) {{
+                                    const line = candleSeries.createPriceLine({{
+                                        price: Number(s),
+                                        color: '#2962ff',
+                                        lineWidth: 1,
+                                        lineStyle: LightweightCharts.LineStyle.Dashed,
+                                        axisLabelVisible: true,
+                                        title: 'SUPPORT ' + Number(s).toFixed(0),
+                                    }});
+                                    activePriceLines.push(line);
+                                }}
                             }});
 
                             (data.structure.resistances || []).forEach(r => {{
-                                const line = candleSeries.createPriceLine({{
-                                    price: r,
-                                    color: '#f57c00',
-                                    lineWidth: 1,
-                                    lineStyle: LightweightCharts.LineStyle.Dashed,
-                                    axisLabelVisible: true,
-                                    title: 'RESISTANCE ' + r.toFixed(0),
-                                }});
-                                activePriceLines.push(line);
+                                if (r != null && !isNaN(r) && Number(r) > 0) {{
+                                    const line = candleSeries.createPriceLine({{
+                                        price: Number(r),
+                                        color: '#f57c00',
+                                        lineWidth: 1,
+                                        lineStyle: LightweightCharts.LineStyle.Dashed,
+                                        axisLabelVisible: true,
+                                        title: 'RESISTANCE ' + Number(r).toFixed(0),
+                                    }});
+                                    activePriceLines.push(line);
+                                }}
                             }});
                         }}
 
@@ -684,7 +703,7 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
                             const pcrEl = document.getElementById('oi-pcr-badge');
                             if (pcrEl) pcrEl.innerText = `PCR: ${{oi.pcr || '--'}}`;
 
-                            if (oi.call_wall) {{
+                            if (oi.call_wall && oi.call_wall.strike != null && !isNaN(oi.call_wall.strike) && Number(oi.call_wall.strike) > 0) {{
                                 const cw = oi.call_wall;
                                 const isCross = cw.prediction === 'WILL_CROSS';
                                 const elCall = document.getElementById('oi-call-wall');
@@ -696,7 +715,7 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
 
                                 // Create Chart Price Line for Call Wall
                                 const callWallLine = candleSeries.createPriceLine({{
-                                    price: cw.strike,
+                                    price: Number(cw.strike),
                                     color: isCross ? '#00e676' : '#e91e63',
                                     lineWidth: 2,
                                     lineStyle: LightweightCharts.LineStyle.Dashed,
@@ -706,7 +725,7 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
                                 activePriceLines.push(callWallLine);
                             }}
 
-                            if (oi.put_wall) {{
+                            if (oi.put_wall && oi.put_wall.strike != null && !isNaN(oi.put_wall.strike) && Number(oi.put_wall.strike) > 0) {{
                                 const pw = oi.put_wall;
                                 const isBreak = pw.prediction === 'WILL_BREAK';
                                 const elPut = document.getElementById('oi-put-wall');
@@ -718,7 +737,7 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
 
                                 // Create Chart Price Line for Put Wall
                                 const putWallLine = candleSeries.createPriceLine({{
-                                    price: pw.strike,
+                                    price: Number(pw.strike),
                                     color: isBreak ? '#ff5252' : '#00b0ff',
                                     lineWidth: 2,
                                     lineStyle: LightweightCharts.LineStyle.Dashed,
@@ -734,52 +753,56 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
                         const hud = document.getElementById('hud-pnl');
                         const posInfo = document.getElementById('active-pos-info');
 
-                        if (pos) {{
+                        if (pos && pos.entry_spot != null && !isNaN(pos.entry_spot)) {{
                             // Draw Entry Line (White/Blue)
                             const entryLine = candleSeries.createPriceLine({{
-                                price: pos.entry_spot,
+                                price: Number(pos.entry_spot),
                                 color: '#ffffff',
                                 lineWidth: 2,
                                 lineStyle: LightweightCharts.LineStyle.Solid,
                                 axisLabelVisible: true,
-                                title: pos.direction + ' ENTRY',
+                                title: (pos.direction || 'BUY') + ' ENTRY',
                             }});
                             activePriceLines.push(entryLine);
 
                             // Draw Green Target Zone
-                            const targetLine = candleSeries.createPriceLine({{
-                                price: pos.spot_target,
-                                color: '#089981',
-                                lineWidth: 2,
-                                lineStyle: LightweightCharts.LineStyle.Solid,
-                                axisLabelVisible: true,
-                                title: 'TARGET +' + pos.target_pts.toFixed(1) + ' pts',
-                            }});
-                            activePriceLines.push(targetLine);
+                            if (pos.spot_target != null && !isNaN(pos.spot_target)) {{
+                                const targetLine = candleSeries.createPriceLine({{
+                                    price: Number(pos.spot_target),
+                                    color: '#089981',
+                                    lineWidth: 2,
+                                    lineStyle: LightweightCharts.LineStyle.Solid,
+                                    axisLabelVisible: true,
+                                    title: 'TARGET +' + Number(pos.target_pts || 3).toFixed(1) + ' pts',
+                                }});
+                                activePriceLines.push(targetLine);
+                            }}
 
                             // Draw Maximum Structural Green/Red Room Ceiling
-                            if (pos.max_spot_target && Math.abs(pos.max_spot_target - pos.spot_target) > 1.0) {{
+                            if (pos.max_spot_target != null && !isNaN(pos.max_spot_target) && Math.abs(pos.max_spot_target - pos.spot_target) > 1.0) {{
                                 const maxLine = candleSeries.createPriceLine({{
-                                    price: pos.max_spot_target,
+                                    price: Number(pos.max_spot_target),
                                     color: '#26a69a',
                                     lineWidth: 2,
                                     lineStyle: LightweightCharts.LineStyle.Dashed,
                                     axisLabelVisible: true,
-                                    title: 'MAX STRUCTURAL ROOM +' + (pos.max_opt_pts || 0).toFixed(1) + ' pts (@ ' + pos.max_spot_target.toFixed(1) + ')',
+                                    title: 'MAX STRUCTURAL ROOM +' + Number(pos.max_opt_pts || 0).toFixed(1) + ' pts (@ ' + Number(pos.max_spot_target).toFixed(1) + ')',
                                 }});
                                 activePriceLines.push(maxLine);
                             }}
 
                             // Draw Red Stop Loss Zone
-                            const slLine = candleSeries.createPriceLine({{
-                                price: pos.spot_sl,
-                                color: '#f23645',
-                                lineWidth: 2,
-                                lineStyle: LightweightCharts.LineStyle.Solid,
-                                axisLabelVisible: true,
-                                title: 'SL -' + pos.sl_pts.toFixed(1) + ' pts',
-                            }});
-                            activePriceLines.push(slLine);
+                            if (pos.spot_sl != null && !isNaN(pos.spot_sl)) {{
+                                const slLine = candleSeries.createPriceLine({{
+                                    price: Number(pos.spot_sl),
+                                    color: '#f23645',
+                                    lineWidth: 2,
+                                    lineStyle: LightweightCharts.LineStyle.Solid,
+                                    axisLabelVisible: true,
+                                    title: 'SL -' + Number(pos.sl_pts || 5).toFixed(1) + ' pts',
+                                }});
+                                activePriceLines.push(slLine);
+                            }}
 
                             // Update Floating HUD
                             hud.style.display = 'block';
