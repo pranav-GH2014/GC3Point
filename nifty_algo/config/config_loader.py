@@ -241,8 +241,8 @@ class ConfigLoader:
         # Risk sub-settings
         risk_dict = raw_dict.get("risk_management", {})
         app_cfg.risk = RiskSettings(
-            max_loss_per_trade_inr=risk_dict.get("max_loss_per_trade_inr", None),
-            stop_loss_option_points=float(risk_dict.get("stop_loss_option_points", 5.0)),
+            max_loss_per_trade_inr=float(risk_dict.get("max_loss_per_trade_inr")) if risk_dict.get("max_loss_per_trade_inr") is not None else None,
+            stop_loss_option_points=float(risk_dict.get("stop_loss_option_points")) if risk_dict.get("stop_loss_option_points") is not None else 0.0,
             daily_max_loss_limit_inr=float(risk_dict.get("daily_max_loss_limit_inr", 1500.0)),
             charges_per_round_trip_estimate_inr=float(risk_dict.get("charges_per_round_trip_estimate_inr", 60.0)),
             stop_structure_buffer_points=float(risk_dict.get("stop_structure_buffer_points", 2.0)),
