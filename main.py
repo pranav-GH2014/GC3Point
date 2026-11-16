@@ -186,30 +186,28 @@ class NiftyTradingBot:
             self.position_tracker.set_active_position(active_pos)
 
         # 5. Populate Option Instruments Cache
-        if not self.config.simulation_mode:
-            try:
-                instruments = self.kite_client.get_instruments("NFO")
-                self.option_selector.update_instruments(instruments)
-            except Exception as e:
-                logger.error("Failed to fetch NFO instruments from Kite: %s", e)
+        try:
+            instruments = self.kite_client.get_instruments("NFO")
+            self.option_selector.update_instruments(instruments)
+        except Exception as e:
+            logger.error("Failed to fetch NFO instruments from Kite: %s", e)
 
         # 5b. Preload Historical 1m & 3m Candles for Chart Visualizer & Structure Engine
-        if not self.config.simulation_mode:
-            try:
-                today = datetime.now()
-                from_date = (today - timedelta(days=4)).strftime("%Y-%m-%d 09:15:00")
-                to_date = today.strftime("%Y-%m-%d %H:%M:%S")
-                c1 = self.kite_client.get_historical_data(self.config.underlying_token, from_date, to_date, "minute")
-                c3 = self.kite_client.get_historical_data(self.config.underlying_token, from_date, to_date, "3minute")
-                if c1:
-                    self.nifty_aggregator.load_historical_candles("1m", c1)
-                    self.latest_nifty_spot = float(c1[-1]["close"])
-                    logger.info("Preloaded %d 1m historical candles for NIFTY spot (Latest: %.2f)", len(c1), self.latest_nifty_spot)
-                if c3:
-                    self.nifty_aggregator.load_historical_candles("3m", c3)
-                    logger.info("Preloaded %d 3m historical candles for NIFTY structure", len(c3))
-            except Exception as e:
-                logger.warning("Could not preload historical candles from Kite: %s", e)
+        try:
+            today = datetime.now()
+            from_date = (today - timedelta(days=4)).strftime("%Y-%m-%d 09:15:00")
+            to_date = today.strftime("%Y-%m-%d %H:%M:%S")
+            c1 = self.kite_client.get_historical_data(self.config.underlying_token, from_date, to_date, "minute")
+            c3 = self.kite_client.get_historical_data(self.config.underlying_token, from_date, to_date, "3minute")
+            if c1:
+                self.nifty_aggregator.load_historical_candles("1m", c1)
+                self.latest_nifty_spot = float(c1[-1]["close"])
+                logger.info("Preloaded %d 1m historical candles for NIFTY spot (Latest: %.2f)", len(c1), self.latest_nifty_spot)
+            if c3:
+                self.nifty_aggregator.load_historical_candles("3m", c3)
+                logger.info("Preloaded %d 3m historical candles for NIFTY structure", len(c3))
+        except Exception as e:
+            logger.warning("Could not preload historical candles from Kite: %s", e)
 
         # 6. Start WebSocket Feed
         self.ws_feed = RobustWebSocketFeed(self.config, on_tick_callback=self._on_ticks_received)
@@ -348,6 +346,12 @@ class NiftyTradingBot:
                 logger.info("[FILTER REJECT] CE opportunity rejected: too close to resistance (room: %.1f pts < 15 pts)", room_to_res)
                 return
 
+        # ADX Low-Momentum Chop Filter: Avoid getting trapped when ADX < 14
+        adx_val = float(indicators.get("adx") or 0.0)
+        if 0.0 < adx_val < 14.0:
+            logger.info("[FILTER REJECT] Opportunity rejected: ADX is %.1f (< 14). Market in low-momentum consolidation chop.", adx_val)
+            return
+
         direction = "BULLISH" if decision.direction == "CE" else "BEARISH"
         setup_name = decision.primary_strategy
         conf_score = decision.combined_confidence
@@ -359,7 +363,11 @@ class NiftyTradingBot:
         )
 
         # Capital & Lot Affordability Verification (Checked against live Kite balance)
-        available_cap = self.get_live_capital()
+        # Capital & Lot Affordability Verification (In paper mode, use ₹50,000 virtual balance for realistic ATM testing)
+        if self.config.simulation_mode:
+            available_cap = 50000.0
+        else:
+            available_cap = self.get_live_capital()
 
         # Select Option Contract (ATM or nearest affordable OTM satisfying available balance)
         contract = self._select_contract_for_signal(direction, available_capital=available_cap)
@@ -404,8 +412,21 @@ class NiftyTradingBot:
 
     def _select_contract_for_signal(self, direction: str, available_capital: Optional[float] = None) -> Optional[Dict[str, Any]]:
         strike_selection = getattr(self.config, "strike_selection", "ATM")
+        
+        # Check if real candidate contracts are available in cache (for both paper and live)
+        candidates = self.option_selector.get_candidates(direction, self.latest_nifty_spot, limit=12)
+        if candidates:
+            symbols = [f"NFO:{c['tradingsymbol']}" for c in candidates]
+            try:
+                quotes = self.kite_client.get_quote(symbols)
+                best = self.option_selector.select_best_contract(direction, self.latest_nifty_spot, quotes, available_capital=available_capital)
+                if best:
+                    return best
+            except Exception as e:
+                logger.warning("Failed to fetch live quotes for option selection: %s", e)
+
         if self.config.simulation_mode:
-            # Paper mode: generate contract specifications
+            # Paper fallback: generate contract specifications
             strike_step = 50.0
             nifty_spot = self.latest_nifty_spot or 24000.0
             atm_strike = round(nifty_spot / strike_step) * strike_step
@@ -428,15 +449,8 @@ class NiftyTradingBot:
                 "spread": 0.5
             }
 
-        # LIVE MODE: Query candidate contracts dynamically and fetch their live quotes
-        candidates = self.option_selector.get_candidates(direction, self.latest_nifty_spot, limit=12)
-        if not candidates:
-            logger.warning("[OPTION SELECTOR] No candidate contracts found in cache for %s near %.1f", direction, self.latest_nifty_spot)
-            return None
-
-        symbols = [f"NFO:{c['tradingsymbol']}" for c in candidates]
-        quotes = self.kite_client.get_quote(symbols)
-        return self.option_selector.select_best_contract(direction, self.latest_nifty_spot, quotes, available_capital=available_capital)
+        logger.warning("[OPTION SELECTOR] No candidate contracts found in cache for %s near %.1f", direction, self.latest_nifty_spot)
+        return None
 
     def _execute_entry(self, contract: Dict[str, Any], setup_name: str, confidence_score: float, target_pts: float = 3.0):
         import uuid
@@ -520,17 +534,36 @@ class NiftyTradingBot:
         target_price = float(pos.get("target_price") or (buy_avg + 3.0))
         filled_qty = int(pos.get("filled_quantity") or pos.get("quantity", 0))
 
-        # In Paper Mode: Check if simulated target hit
+        # In Paper Mode: Check if simulated target hit based on real live market progression
         if self.config.simulation_mode:
-            # Check price progression
-            # For demonstration in paper mode, trigger simulated target exit
-            time.sleep(2.0)
-            sell_avg = target_price
-            gross_pnl = round((sell_avg - buy_avg) * filled_qty, 2)
-            charges = ZerodhaOptionChargesCalculator.calculate(buy_avg, sell_avg, filled_qty)
-            net_pnl = round(gross_pnl - charges.total_charges, 2)
+            opt_type = pos.get("option_type") or ("PE" if tradingsymbol.endswith("PE") else "CE")
+            entry_spot = float(pos.get("entry_spot") or self.latest_nifty_spot or 25200.0)
+            curr_spot = float(self.latest_nifty_spot or entry_spot)
 
-            self._finalize_closed_position(pos, sell_avg, gross_pnl, net_pnl, charges.total_charges, "Target +3.0 Points Hit")
+            curr_opt_ltp = None
+            token = pos.get("instrument_token")
+            if token and token != 999999:
+                try:
+                    q = self.kite_client.get_quote([token])
+                    if q and token in q:
+                        curr_opt_ltp = float(q[token].get("last_price", 0.0))
+                except Exception:
+                    pass
+
+            if curr_opt_ltp is None or curr_opt_ltp <= 0:
+                spot_move = (curr_spot - entry_spot) if opt_type == "CE" else (entry_spot - curr_spot)
+                curr_opt_ltp = round(max(0.5, buy_avg + (spot_move * 0.5)), 2)
+
+            pos["current_opt_ltp"] = curr_opt_ltp
+            pos["unrealized_pts"] = round(curr_opt_ltp - buy_avg, 2)
+            pos["unrealized_pnl"] = round((curr_opt_ltp - buy_avg) * filled_qty, 2)
+
+            if curr_opt_ltp >= target_price:
+                sell_avg = target_price
+                gross_pnl = round((sell_avg - buy_avg) * filled_qty, 2)
+                charges = ZerodhaOptionChargesCalculator.calculate(buy_avg, sell_avg, filled_qty)
+                net_pnl = round(gross_pnl - charges.total_charges, 2)
+                self._finalize_closed_position(pos, sell_avg, gross_pnl, net_pnl, charges.total_charges, "Target +3.0 Points Hit (Paper)")
             return
 
         # LIVE MODE: Check broker order and position status
