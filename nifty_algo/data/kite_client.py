@@ -17,7 +17,7 @@ class SafeKiteClient:
     def __init__(self, config: AppConfig):
         self.config = config
         self.kite: Any = None
-        if not config.simulation_mode and config.api_key:
+        if config.api_key:
             try:
                 from kiteconnect import KiteConnect
                 self.kite = KiteConnect(api_key=config.api_key)
@@ -87,6 +87,8 @@ class SafeKiteClient:
     def place_order(self, variety: str, exchange: str, tradingsymbol: str, transaction_type: str,
                     quantity: int, product: str, order_type: str, price: Optional[float] = None,
                     trigger_price: Optional[float] = None, tag: Optional[str] = None) -> str:
+        if self.config.simulation_mode:
+            raise RuntimeError("CRITICAL HARD STOP: place_order called while simulation_mode=True! Live order strictly blocked.")
         self._rate_limit()
         logger.info(
             "[KITE EXECUTE] %s %d %s:%s @ %s (Product: %s, OrderType: %s)",
