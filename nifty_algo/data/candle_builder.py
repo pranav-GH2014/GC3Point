@@ -122,5 +122,11 @@ class MultiTimeframeCandleAggregator:
         if not self.history[tf]:
             return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
         df = pd.DataFrame(self.history[tf])
-        df["date"] = pd.to_datetime(df["date"])
+        try:
+            df["date"] = pd.to_datetime(df["date"], utc=True)
+        except Exception:
+            try:
+                df["date"] = pd.to_datetime(df["date"])
+            except Exception as e:
+                logger.warning("Error converting candle dates to datetime: %s", e)
         return df

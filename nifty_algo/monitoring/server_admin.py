@@ -1007,7 +1007,11 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
             raise HTTPException(status_code=401, detail="Unauthorized")
         if not bot_controller or not hasattr(bot_controller, "get_chart_data"):
             return JSONResponse({"candles": [], "structure": {}, "active_trade": None, "heavyweights": {}})
-        return JSONResponse(bot_controller.get_chart_data())
+        try:
+            return JSONResponse(bot_controller.get_chart_data())
+        except Exception as e:
+            logger.error("Error generating chart data in API: %s", e, exc_info=True)
+            return JSONResponse({"candles": [], "structure": {}, "active_trade": None, "heavyweights": {}, "error": str(e)})
 
     @app.get("/api/status")
     def api_status(request: Request = None):

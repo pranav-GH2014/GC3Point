@@ -706,8 +706,14 @@ class NiftyTradingBot:
 
     def get_chart_data(self) -> Dict[str, Any]:
         """Provides structured real-time data for the TradingView-style automatic visualizer."""
-        df_1m = self.nifty_aggregator.get_dataframe("1m")
-        df_3m = self.nifty_aggregator.get_dataframe("3m")
+        try:
+            df_1m = self.nifty_aggregator.get_dataframe("1m")
+            df_3m = self.nifty_aggregator.get_dataframe("3m")
+        except Exception as e:
+            logger.warning("Error fetching candle dataframes: %s", e)
+            import pandas as pd
+            df_1m = pd.DataFrame()
+            df_3m = pd.DataFrame()
 
         candles = []
         if len(df_1m) > 0:
