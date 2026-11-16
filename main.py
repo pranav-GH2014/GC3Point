@@ -880,6 +880,40 @@ class NiftyTradingBot:
             logger.warning("Could not fetch recent positions: %s", e)
             recent_trades = []
 
+        # Compute Buy & Sell Liquidity Zones for Chart Visualizer
+        curr_p = float(self.latest_nifty_spot or (candles[-1]["close"] if candles else 25200.0))
+        cdh = float(structure.get("cdh") or (curr_p + 50.0))
+        cdl = float(structure.get("cdl") or (curr_p - 50.0))
+        next_res = float(structure.get("next_resistance") or cdh)
+        next_sup = float(structure.get("next_support") or cdl)
+        
+        # Sell Liquidity Area (Supply / Resistance / BSL Pool)
+        sell_bottom = next_res if next_res > curr_p else max(curr_p + 10.0, cdh - 20.0)
+        sell_top = max(cdh, sell_bottom + 18.0)
+        if sell_top - sell_bottom < 15.0:
+            sell_top = sell_bottom + 18.0
+
+        # Buy Liquidity Area (Demand / Support / SSL Pool)
+        buy_top = next_sup if next_sup < curr_p else min(curr_p - 10.0, cdl + 20.0)
+        buy_bottom = min(cdl, buy_top - 18.0)
+        if buy_top - buy_bottom < 15.0:
+            buy_bottom = buy_top - 18.0
+
+        liquidity_zones = {
+            "sell_zone": {
+                "top": round(sell_top, 2),
+                "bottom": round(sell_bottom, 2),
+                "type": "BSL_SUPPLY",
+                "label": f"SELL LIQUIDITY ZONE ({sell_bottom:.0f} - {sell_top:.0f})"
+            },
+            "buy_zone": {
+                "top": round(buy_top, 2),
+                "bottom": round(buy_bottom, 2),
+                "type": "SSL_DEMAND",
+                "label": f"BUY LIQUIDITY ZONE ({buy_bottom:.0f} - {buy_top:.0f})"
+            }
+        }
+
         return {
             "capital": self.get_live_capital(),
             "latest_spot": self.latest_nifty_spot,
@@ -892,6 +926,7 @@ class NiftyTradingBot:
                 "orb_high": structure.get("orb_high"),
                 "orb_low": structure.get("orb_low"),
             },
+            "liquidity": liquidity_zones,
             "heavyweights": {
                 "summary": hw_eval.summary if hw_eval else "N/A",
                 "is_bullish_aligned": hw_eval.is_bullish_aligned if hw_eval else False,

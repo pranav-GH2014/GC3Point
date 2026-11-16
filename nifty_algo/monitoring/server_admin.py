@@ -489,11 +489,15 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
                 <div class="chart-section">
                     <div class="chart-header">
                         <div class="ticker-info">
-                            <span class="ticker-symbol">NIFTY 50 (1m)</span>
+                            <span class="ticker-symbol">NIFTY 50 (3m)</span>
                             <span id="spot-price" class="ticker-price">--</span>
                         </div>
+                        <div style="display: flex; gap: 8px; font-size: 11px; align-items: center;">
+                            <span style="background: rgba(242, 54, 69, 0.15); border: 1px solid #f23645; color: #ff5252; padding: 2px 8px; border-radius: 4px; font-weight: 600;">🔴 SELL LIQUIDITY: <span id="hdr-sell-liq">--</span></span>
+                            <span style="background: rgba(8, 153, 129, 0.15); border: 1px solid #089981; color: #26a69a; padding: 2px 8px; border-radius: 4px; font-weight: 600;">🟢 BUY LIQUIDITY: <span id="hdr-buy-liq">--</span></span>
+                        </div>
                         <div style="font-size: 12px; color: #787b86;">
-                            Target: <b style="color: #089981;">+3.0 / +15.0 pts</b> | Initial SL: <b style="color: #f23645;">-5.0 pts</b>
+                            Target: <b style="color: #089981;">+3.0 pts</b>
                         </div>
                     </div>
 
@@ -504,7 +508,10 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
                         <div id="hud-sub" class="hud-sub">Option LTP: ₹0.00 | Move: 0.0 pts</div>
                     </div>
 
-                    <div id="chart"></div>
+                    <div style="position: relative; width: 100%; flex: 1; min-height: 520px; display: flex;">
+                        <div id="chart" style="width: 100%; height: 100%;"></div>
+                        <canvas id="liquidity-canvas" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 5;"></canvas>
+                    </div>
                 </div>
 
                 <!-- Sidebar Controls & Stats -->
@@ -613,10 +620,99 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
 
                 let activePriceLines = [];
                 let markers = [];
+                let latestLiquidityData = null;
 
                 function clearPriceLines() {{
                     activePriceLines.forEach(l => candleSeries.removePriceLine(l));
                     activePriceLines = [];
+                }}
+
+                function renderLiquidityCanvas() {{
+                    const canvas = document.getElementById('liquidity-canvas');
+                    if (!canvas || !latestLiquidityData) return;
+                    const chartDiv = document.getElementById('chart');
+                    if (!chartDiv) return;
+
+                    const w = chartDiv.clientWidth;
+                    const h = chartDiv.clientHeight;
+                    if (w === 0 || h === 0) return;
+
+                    if (canvas.width !== w || canvas.height !== h) {{
+                        canvas.width = w;
+                        canvas.height = h;
+                    }}
+
+                    const ctx = canvas.getContext('2d');
+                    ctx.clearRect(0, 0, w, h);
+
+                    const rightScaleWidth = 65;
+                    const drawW = Math.max(10, w - rightScaleWidth);
+
+                    // 1. Draw Large Red Shaded Box for Sell Liquidity (BSL / Supply)
+                    if (latestLiquidityData.sell_zone) {{
+                        const sz = latestLiquidityData.sell_zone;
+                        const yTop = candleSeries.priceToCoordinate(Number(sz.top));
+                        const yBot = candleSeries.priceToCoordinate(Number(sz.bottom));
+                        if (yTop !== null && yBot !== null) {{
+                            const y1 = Math.min(yTop, yBot);
+                            const y2 = Math.max(yTop, yBot);
+                            const boxH = Math.max(18, y2 - y1);
+
+                            // Soft Red Gradient Shading
+                            const redGrad = ctx.createLinearGradient(0, y1, 0, y1 + boxH);
+                            redGrad.addColorStop(0, 'rgba(242, 54, 69, 0.32)');
+                            redGrad.addColorStop(1, 'rgba(242, 54, 69, 0.12)');
+                            ctx.fillStyle = redGrad;
+                            ctx.fillRect(0, y1, drawW, boxH);
+
+                            // Dashed Red Border
+                            ctx.strokeStyle = 'rgba(242, 54, 69, 0.85)';
+                            ctx.lineWidth = 1.5;
+                            ctx.setLineDash([5, 5]);
+                            ctx.strokeRect(0, y1, drawW, boxH);
+                            ctx.setLineDash([]);
+
+                            // Watermark Label Badge
+                            ctx.fillStyle = 'rgba(242, 54, 69, 0.95)';
+                            ctx.fillRect(10, y1 + 3, 275, 20);
+                            ctx.fillStyle = '#ffffff';
+                            ctx.font = 'bold 11px sans-serif';
+                            ctx.fillText('🔴 SELL LIQUIDITY (SUPPLY: ' + Number(sz.bottom).toFixed(0) + ' - ' + Number(sz.top).toFixed(0) + ')', 16, y1 + 17);
+                        }}
+                    }}
+
+                    // 2. Draw Large Green Shaded Box for Buy Liquidity (SSL / Demand)
+                    if (latestLiquidityData.buy_zone) {{
+                        const bz = latestLiquidityData.buy_zone;
+                        const yTop = candleSeries.priceToCoordinate(Number(bz.top));
+                        const yBot = candleSeries.priceToCoordinate(Number(bz.bottom));
+                        if (yTop !== null && yBot !== null) {{
+                            const y1 = Math.min(yTop, yBot);
+                            const y2 = Math.max(yTop, yBot);
+                            const boxH = Math.max(18, y2 - y1);
+
+                            // Soft Green Gradient Shading
+                            const greenGrad = ctx.createLinearGradient(0, y1, 0, y1 + boxH);
+                            greenGrad.addColorStop(0, 'rgba(8, 153, 129, 0.12)');
+                            greenGrad.addColorStop(1, 'rgba(8, 153, 129, 0.32)');
+                            ctx.fillStyle = greenGrad;
+                            ctx.fillRect(0, y1, drawW, boxH);
+
+                            // Dashed Green Border
+                            ctx.strokeStyle = 'rgba(8, 153, 129, 0.85)';
+                            ctx.lineWidth = 1.5;
+                            ctx.setLineDash([5, 5]);
+                            ctx.strokeRect(0, y1, drawW, boxH);
+                            ctx.setLineDash([]);
+
+                            // Watermark Label Badge
+                            ctx.fillStyle = 'rgba(8, 153, 129, 0.95)';
+                            ctx.fillRect(10, y1 + boxH - 23, 275, 20);
+                            ctx.fillStyle = '#ffffff';
+                            ctx.font = 'bold 11px sans-serif';
+                            ctx.fillText('🟢 BUY LIQUIDITY (DEMAND: ' + Number(bz.bottom).toFixed(0) + ' - ' + Number(bz.top).toFixed(0) + ')', 16, y1 + boxH - 9);
+                        }}
+                    }}
                 }}
 
                 async function fetchChartData() {{
@@ -688,6 +784,45 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
                                     activePriceLines.push(line);
                                 }}
                             }});
+                        }}
+
+                        // 2.2 Draw Real-Time Buy & Sell Liquidity Zones
+                        if (data.liquidity) {{
+                            latestLiquidityData = data.liquidity;
+                            
+                            if (data.liquidity.sell_zone) {{
+                                const sz = data.liquidity.sell_zone;
+                                const hdrSell = document.getElementById('hdr-sell-liq');
+                                if (hdrSell) hdrSell.innerText = `${{Number(sz.bottom).toFixed(0)}} - ${{Number(sz.top).toFixed(0)}}`;
+
+                                const sBotLine = candleSeries.createPriceLine({{
+                                    price: Number(sz.bottom),
+                                    color: '#f23645',
+                                    lineWidth: 2,
+                                    lineStyle: LightweightCharts.LineStyle.Solid,
+                                    axisLabelVisible: true,
+                                    title: '🔴 SELL LIQ ' + Number(sz.bottom).toFixed(0),
+                                }});
+                                activePriceLines.push(sBotLine);
+                            }}
+
+                            if (data.liquidity.buy_zone) {{
+                                const bz = data.liquidity.buy_zone;
+                                const hdrBuy = document.getElementById('hdr-buy-liq');
+                                if (hdrBuy) hdrBuy.innerText = `${{Number(bz.bottom).toFixed(0)}} - ${{Number(bz.top).toFixed(0)}}`;
+
+                                const bTopLine = candleSeries.createPriceLine({{
+                                    price: Number(bz.top),
+                                    color: '#089981',
+                                    lineWidth: 2,
+                                    lineStyle: LightweightCharts.LineStyle.Solid,
+                                    axisLabelVisible: true,
+                                    title: '🟢 BUY LIQ ' + Number(bz.top).toFixed(0),
+                                }});
+                                activePriceLines.push(bTopLine);
+                            }}
+
+                            requestAnimationFrame(renderLiquidityCanvas);
                         }}
 
                         // 2.5 Draw Key Open Interest Walls (Call Wall & Put Wall) + Cross / Bounce Indicator
@@ -900,6 +1035,11 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
                 // Resize handler
                 window.addEventListener('resize', () => {{
                     chart.applyOptions({{ width: chartContainer.clientWidth, height: chartContainer.clientHeight }});
+                    requestAnimationFrame(renderLiquidityCanvas);
+                }});
+
+                chart.timeScale().subscribeVisibleLogicalRangeChange(() => {{
+                    requestAnimationFrame(renderLiquidityCanvas);
                 }});
 
                 // Poll every 1.5 seconds for real-time responsiveness
