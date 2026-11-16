@@ -40,10 +40,10 @@ class BrokerReconciler:
             open_orders = self.kite_client.get_orders()
             sqlite_pos = self.db.get_open_strategy_position()
 
-            # Filter non-zero NIFTY option positions
+            # Filter non-zero NIFTY option positions ONLY (strictly ignore equities like BHARTIARTL, holdings, etc.)
             live_open_nifty = [
                 p for p in net_positions 
-                if p.get("quantity", 0) != 0 and "NIFTY" in p.get("tradingsymbol", "")
+                if p.get("quantity", 0) != 0 and p.get("tradingsymbol", "").startswith("NIFTY")
             ]
 
             # Case 1: Broker has NO open NIFTY positions

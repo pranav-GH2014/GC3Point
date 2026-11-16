@@ -320,13 +320,24 @@ class NiftyTradingBot:
         # Evaluate Big 3 Heavyweights (HDFC, Reliance, ICICI)
         hw_eval = self.heavyweight_engine.evaluate() if self.heavyweight_engine else None
 
+        # Fetch current real-time OI intelligence
+        oi_intel = self._refresh_oi_intel()
+        oi_bias = "NEUTRAL"
+        pcr_val = 1.0
+        if oi_intel:
+            pcr_val = float(oi_intel.get("pcr", 1.0) or 1.0)
+            if pcr_val > 1.15:
+                oi_bias = "BULLISH"
+            elif pcr_val < 0.85:
+                oi_bias = "BEARISH"
+
         # Multi-Engine Opportunity Evaluation & Central Arbitration (Section 3 & 7)
         decision, raw_sigs = self.multi_coordinator.evaluate_all_engines(
             candles_1m=c1_list,
             candles_3m=c3_list,
             structure=structure,
             indicators=indicators,
-            oi_data={"oi_bias": "NEUTRAL", "pcr": 1.0},
+            oi_data={"oi_bias": oi_bias, "pcr": pcr_val, "call_wall": oi_intel.get("call_wall"), "put_wall": oi_intel.get("put_wall")},
             has_open_position=self.position_tracker.has_open_position,
             heavyweight_eval=hw_eval
         )
@@ -334,24 +345,57 @@ class NiftyTradingBot:
         if not decision.should_execute:
             return
 
-        # Smart Room-to-Level Filter: Enforce sufficient room to key opposing liquidity
+        # Smart Liquidity & Opposing Level Filter:
+        # Prevents shorting directly into Buy Liquidity / Demand Support (e.g. at 25200)
+        # Prevents buying directly into Sell Liquidity / Supply Resistance (e.g. above 25229)
+        current_spot = float(self.latest_nifty_spot or structure.get("current_price") or 25200.0)
+        pdl_val = float(structure.get("pdl") or 0.0)
+        cdl_val = float(structure.get("cdl") or current_spot)
+        pdh_val = float(structure.get("pdh") or 0.0)
+        cdh_val = float(structure.get("cdh") or current_spot)
+
+        put_wall_strike = float(oi_intel.get("put_wall", {}).get("strike", 0.0) or 0.0) if oi_intel else 0.0
+        call_wall_strike = float(oi_intel.get("call_wall", {}).get("strike", 0.0) or 0.0) if oi_intel else 0.0
+
+        candidates_demand = [v for v in [cdl_val + 5.0, pdl_val, put_wall_strike] if 0.0 < v <= current_spot + 15.0]
+        buy_liq_top = max(candidates_demand) if candidates_demand else (current_spot - 50.0)
+
+        candidates_supply = [v for v in [cdh_val - 5.0, pdh_val, call_wall_strike] if v >= current_spot - 15.0]
+        sell_liq_bottom = min(candidates_supply) if candidates_supply else (current_spot + 50.0)
+
         is_reversal = decision.primary_strategy in ["ENGINE_2_RETEST", "ENGINE_3_TRAP"]
+
         if decision.direction == "PE":
+            dist_to_demand = current_spot - buy_liq_top
+            if dist_to_demand < 12.0 and not is_reversal:
+                logger.info(
+                    "[FILTER REJECT] PE opportunity rejected: directly inside or too close to Buy Liquidity / Demand Zone (Spot: %.1f, Demand Top: %.1f, Dist: %.1f pts < 12 pts)",
+                    current_spot, buy_liq_top, dist_to_demand
+                )
+                return
+
             room_to_sup = float(structure.get("room_to_support", 999.0) or 999.0)
             if is_reversal:
-                major_sup = float(structure.get("cdl") or ((self.latest_nifty_spot or 25200.0) - 50.0))
-                room_to_sup = max(room_to_sup, max(0.0, (self.latest_nifty_spot or 25200.0) - major_sup))
-            if room_to_sup < 15.0:
+                room_to_sup = max(room_to_sup, max(0.0, current_spot - cdl_val))
+            if room_to_sup < 15.0 and dist_to_demand < 15.0:
                 logger.info("[FILTER REJECT] PE opportunity rejected: too close to support (room: %.1f pts < 15 pts)", room_to_sup)
                 return
+
         elif decision.direction == "CE":
+            dist_to_supply = sell_liq_bottom - current_spot
+            if dist_to_supply < 12.0 and not is_reversal:
+                logger.info(
+                    "[FILTER REJECT] CE opportunity rejected: directly inside or too close to Sell Liquidity / Supply Zone (Spot: %.1f, Supply Floor: %.1f, Dist: %.1f pts < 12 pts)",
+                    current_spot, sell_liq_bottom, dist_to_supply
+                )
+                return
+
             room_to_res = float(structure.get("room_to_resistance", 999.0) or 999.0)
             if is_reversal:
                 vwap_val = float(indicators.get("vwap") or 0.0)
-                cdh_val = float(structure.get("cdh") or 0.0)
-                major_ceil = max(vwap_val, cdh_val) if max(vwap_val, cdh_val) > (self.latest_nifty_spot or 0.0) else ((self.latest_nifty_spot or 25200.0) + 40.0)
-                room_to_res = max(room_to_res, max(0.0, major_ceil - (self.latest_nifty_spot or 25200.0)))
-            if room_to_res < 15.0:
+                major_ceil = max(vwap_val, cdh_val) if max(vwap_val, cdh_val) > current_spot else (current_spot + 40.0)
+                room_to_res = max(room_to_res, max(0.0, major_ceil - current_spot))
+            if room_to_res < 15.0 and dist_to_supply < 15.0:
                 logger.info("[FILTER REJECT] CE opportunity rejected: too close to resistance (room: %.1f pts < 15 pts)", room_to_res)
                 return
 
@@ -533,7 +577,7 @@ class NiftyTradingBot:
             logger.critical("[EXIT ORDER WARNING] Failed to place initial target order: %s", sell_msg)
 
     def _manage_open_position(self):
-        """Monitors open position and verifies exit execution."""
+        """Monitors open position, verifies exit execution, and enforces hard Stop Loss."""
         pos = self.position_tracker.current_position
         if not pos or pos.get("status") != "OPEN":
             return
@@ -541,9 +585,10 @@ class NiftyTradingBot:
         tradingsymbol = pos["tradingsymbol"]
         buy_avg = float(pos.get("buy_avg_price") or pos.get("average_price") or pos.get("buy_price", 0.0))
         target_price = float(pos.get("target_price") or (buy_avg + 3.0))
+        stop_loss_price = float(pos.get("stop_loss_price") or (buy_avg - 5.0))
         filled_qty = int(pos.get("filled_quantity") or pos.get("quantity", 0))
 
-        # In Paper Mode: Check if simulated target hit based on real live market progression
+        # In Paper Mode: Check if simulated target OR stop loss hit based on live quotes
         if self.config.simulation_mode:
             opt_type = pos.get("option_type") or ("PE" if tradingsymbol.endswith("PE") else "CE")
             entry_spot = float(pos.get("entry_spot") or self.latest_nifty_spot or 25200.0)
@@ -567,20 +612,30 @@ class NiftyTradingBot:
             pos["unrealized_pts"] = round(curr_opt_ltp - buy_avg, 2)
             pos["unrealized_pnl"] = round((curr_opt_ltp - buy_avg) * filled_qty, 2)
 
+            # Check Stop Loss (-5.0 pts)
+            if curr_opt_ltp <= stop_loss_price:
+                sell_avg = stop_loss_price
+                gross_pnl = round((sell_avg - buy_avg) * filled_qty, 2)
+                charges = ZerodhaOptionChargesCalculator.calculate(buy_avg, sell_avg, filled_qty)
+                net_pnl = round(gross_pnl - charges.total_charges, 2)
+                self._finalize_closed_position(pos, sell_avg, gross_pnl, net_pnl, charges.total_charges, f"Stop Loss Hit (-{buy_avg - sell_avg:.1f} pts) (Paper)")
+                return
+
+            # Check Target (+3.0 pts)
             if curr_opt_ltp >= target_price:
                 sell_avg = target_price
                 gross_pnl = round((sell_avg - buy_avg) * filled_qty, 2)
                 charges = ZerodhaOptionChargesCalculator.calculate(buy_avg, sell_avg, filled_qty)
                 net_pnl = round(gross_pnl - charges.total_charges, 2)
-                self._finalize_closed_position(pos, sell_avg, gross_pnl, net_pnl, charges.total_charges, "Target +3.0 Points Hit (Paper)")
+                self._finalize_closed_position(pos, sell_avg, gross_pnl, net_pnl, charges.total_charges, f"Target +{target_price - buy_avg:.1f} Points Hit (Paper)")
+                return
             return
 
         # LIVE MODE: Check broker order and position status
         try:
             verified_qty, _ = self.exit_manager.get_verified_remaining_long_quantity(tradingsymbol)
             if verified_qty == 0:
-                # Position has closed on broker!
-                # Fetch sell average price from trades
+                # Position has closed on broker! Fetch actual trade sell average
                 trades = self.kite_client.get_trades()
                 relevant_sell = [t for t in trades if t.get("tradingsymbol") == tradingsymbol and t.get("transaction_type") == "SELL"]
                 sell_avg = relevant_sell[-1].get("average_price", target_price) if relevant_sell else target_price
@@ -588,8 +643,60 @@ class NiftyTradingBot:
                 charges = ZerodhaOptionChargesCalculator.calculate(buy_avg, sell_avg, filled_qty)
                 net_pnl = round(gross_pnl - charges.total_charges, 2)
 
-                self._finalize_closed_position(pos, sell_avg, gross_pnl, net_pnl, charges.total_charges, "Target +3.0 Points Hit on Broker")
+                pts_diff = sell_avg - buy_avg
+                if pts_diff >= 2.0:
+                    exit_reason = f"Target +{pts_diff:.1f} Points Hit on Broker"
+                elif pts_diff <= -3.0:
+                    exit_reason = f"Stop Loss -{abs(pts_diff):.1f} Points Hit on Broker"
+                else:
+                    exit_reason = f"Position Closed on Broker ({'+' if pts_diff >= 0 else ''}{pts_diff:.1f} pts)"
+
+                self._finalize_closed_position(pos, sell_avg, gross_pnl, net_pnl, charges.total_charges, exit_reason)
                 return
+
+            # Position is still open on broker! Check option LTP for Stop Loss (-5.0 pts)
+            token = pos.get("instrument_token")
+            curr_opt_ltp = None
+            if token and token != 999999:
+                try:
+                    q = self.kite_client.get_quote([token])
+                    if q and token in q:
+                        curr_opt_ltp = float(q[token].get("last_price", 0.0))
+                except Exception as e:
+                    logger.debug("Failed to get live quote for open position SL check: %s", e)
+
+            if curr_opt_ltp and curr_opt_ltp <= stop_loss_price:
+                logger.warning(
+                    "[STOP LOSS TRIGGERED] %s LTP ₹%.2f dropped below SL ₹%.2f (-%.1f pts). Executing marketable limit exit!",
+                    tradingsymbol, curr_opt_ltp, stop_loss_price, buy_avg - stop_loss_price
+                )
+                # Cancel pending target order first to avoid double-shorting on broker
+                try:
+                    open_orders = self.kite_client.get_orders()
+                    for o in open_orders:
+                        if o.get("tradingsymbol") == tradingsymbol and o.get("transaction_type") == "SELL" and o.get("status") in ("OPEN", "TRIGGER PENDING"):
+                            self.kite_client.cancel_order("regular", o["order_id"])
+                            logger.info("Cancelled pending target order %s before SL exit", o["order_id"])
+                except Exception as e:
+                    logger.warning("Error cancelling target order before SL exit: %s", e)
+
+                # Submit Marketable Limit Order (LTP - 1.5 pts) with tick-size rounding
+                # Comply with Zerodha policy: pure MARKET orders without market protection are rejected on NFO
+                marketable_limit = round(max(0.5, curr_opt_ltp - 1.5), 1)
+                try:
+                    sl_res = self.kite_client.place_order(
+                        variety="regular",
+                        exchange="NFO",
+                        tradingsymbol=tradingsymbol,
+                        transaction_type="SELL",
+                        quantity=verified_qty,
+                        product=pos.get("product", "NRML"),
+                        order_type="LIMIT",
+                        price=marketable_limit
+                    )
+                    logger.info("[SL MARKETABLE LIMIT SUBMITTED] %s @ ₹%.2f (Order: %s)", tradingsymbol, marketable_limit, sl_res.get("order_id"))
+                except Exception as e:
+                    logger.critical("[SL ORDER FAILED] Error placing marketable limit exit on Kite: %s", e)
 
         except Exception as e:
             logger.error("Error monitoring open position: %s", e)
