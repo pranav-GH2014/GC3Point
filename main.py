@@ -923,6 +923,30 @@ class NiftyTradingBot:
             }
         }
 
+        # Scan for Recent Active Fair Value Gaps (FVG)
+        fvg_zones = []
+        target_df = df_3m if len(df_3m) >= 6 else df_1m
+        if len(target_df) >= 3:
+            records = target_df.tail(60).to_dict("records")
+            for i in range(len(records) - 2):
+                c1 = records[i]
+                c2 = records[i + 1]
+                c3 = records[i + 2]
+                bull_gap = float(c3["low"]) - float(c1["high"])
+                if bull_gap >= 2.0 and float(c2["close"]) > float(c2["open"]):
+                    gap_top = round(float(c3["low"]), 2)
+                    gap_bottom = round(float(c1["high"]), 2)
+                    subsequent = records[i + 3:]
+                    if not subsequent or min(float(r["low"]) for r in subsequent) >= (gap_bottom - 1.5):
+                        fvg_zones.append({
+                            "type": "BULLISH_FVG",
+                            "top": gap_top,
+                            "bottom": gap_bottom,
+                            "gap_pts": round(bull_gap, 1),
+                            "color": "#00e676",
+                            "label": f"⚡ BRIGHT GREEN FVG ({gap_bottom:.0f} - {gap_top:.0f})"
+                        })
+
         return {
             "capital": self.get_live_capital(),
             "latest_spot": self.latest_nifty_spot,
@@ -936,6 +960,7 @@ class NiftyTradingBot:
                 "orb_low": structure.get("orb_low"),
             },
             "liquidity": liquidity_zones,
+            "fvg_zones": fvg_zones[-3:],
             "heavyweights": {
                 "summary": hw_eval.summary if hw_eval else "N/A",
                 "is_bullish_aligned": hw_eval.is_bullish_aligned if hw_eval else False,

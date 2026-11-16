@@ -492,9 +492,10 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
                             <span class="ticker-symbol">NIFTY 50 (3m)</span>
                             <span id="spot-price" class="ticker-price">--</span>
                         </div>
-                        <div style="display: flex; gap: 8px; font-size: 11px; align-items: center;">
+                        <div style="display: flex; gap: 8px; font-size: 11px; align-items: center; flex-wrap: wrap;">
                             <span style="background: rgba(242, 54, 69, 0.15); border: 1px solid #f23645; color: #ff5252; padding: 2px 8px; border-radius: 4px; font-weight: 600;">🔴 SELL LIQUIDITY: <span id="hdr-sell-liq">--</span></span>
                             <span style="background: rgba(8, 153, 129, 0.15); border: 1px solid #089981; color: #26a69a; padding: 2px 8px; border-radius: 4px; font-weight: 600;">🟢 BUY LIQUIDITY: <span id="hdr-buy-liq">--</span></span>
+                            <span style="background: rgba(0, 230, 118, 0.18); border: 1px solid #00e676; color: #00e676; padding: 2px 8px; border-radius: 4px; font-weight: bold;">⚡ BRIGHT GREEN FVG: <span id="hdr-fvg-text">Scanning...</span></span>
                         </div>
                         <div style="font-size: 12px; color: #787b86;">
                             Target: <b style="color: #089981;">+3.0 pts</b>
@@ -621,6 +622,7 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
                 let activePriceLines = [];
                 let markers = [];
                 let latestLiquidityData = null;
+                let latestFvgZones = [];
 
                 function clearPriceLines() {{
                     activePriceLines.forEach(l => candleSeries.removePriceLine(l));
@@ -712,6 +714,35 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
                             ctx.font = 'bold 11px sans-serif';
                             ctx.fillText('🟢 BUY LIQUIDITY (DEMAND: ' + Number(bz.bottom).toFixed(0) + ' - ' + Number(bz.top).toFixed(0) + ')', 16, y1 + boxH - 9);
                         }}
+                    }}
+
+                    // 3. Draw Bright Neon Green Box for Fair Value Gaps (FVG)
+                    if (latestFvgZones && latestFvgZones.length > 0) {{
+                        latestFvgZones.forEach(fvg => {{
+                            const yTop = candleSeries.priceToCoordinate(Number(fvg.top));
+                            const yBot = candleSeries.priceToCoordinate(Number(fvg.bottom));
+                            if (yTop !== null && yBot !== null) {{
+                                const y1 = Math.min(yTop, yBot);
+                                const y2 = Math.max(yTop, yBot);
+                                const boxH = Math.max(12, y2 - y1);
+
+                                // Bright Glowing Neon Green Fill
+                                ctx.fillStyle = 'rgba(0, 230, 118, 0.40)';
+                                ctx.fillRect(0, y1, drawW, boxH);
+
+                                // Bright Neon Green Solid Border
+                                ctx.strokeStyle = '#00e676';
+                                ctx.lineWidth = 2.0;
+                                ctx.strokeRect(0, y1, drawW, boxH);
+
+                                // Badge
+                                ctx.fillStyle = '#00e676';
+                                ctx.fillRect(15, y1 + 2, 230, 18);
+                                ctx.fillStyle = '#131722';
+                                ctx.font = 'bold 11px sans-serif';
+                                ctx.fillText('⚡ BRIGHT GREEN FVG (' + Number(fvg.bottom).toFixed(0) + ' - ' + Number(fvg.top).toFixed(0) + ')', 20, y1 + 15);
+                            }}
+                        }});
                     }}
                 }}
 
@@ -823,6 +854,31 @@ def create_admin_app(bot_controller: Any, db: DatabaseManager) -> FastAPI:
                             }}
 
                             requestAnimationFrame(renderLiquidityCanvas);
+                        }}
+
+                        // 2.3 Store & Draw Bright Green FVG Zones
+                        latestFvgZones = data.fvg_zones || [];
+                        if (data.fvg_zones && data.fvg_zones.length > 0) {{
+                            const fvgHdr = document.getElementById('hdr-fvg-text');
+                            if (fvgHdr) {{
+                                const f = data.fvg_zones[data.fvg_zones.length - 1];
+                                fvgHdr.innerText = `${{Number(f.bottom).toFixed(0)}} - ${{Number(f.top).toFixed(0)}} (+${{f.gap_pts}} pts)`;
+                            }}
+
+                            data.fvg_zones.forEach(f => {{
+                                const fvgLine = candleSeries.createPriceLine({{
+                                    price: Number(f.top),
+                                    color: '#00e676',
+                                    lineWidth: 2,
+                                    lineStyle: LightweightCharts.LineStyle.Dashed,
+                                    axisLabelVisible: true,
+                                    title: '⚡ BRIGHT GREEN FVG ' + Number(f.top).toFixed(0),
+                                }});
+                                activePriceLines.push(fvgLine);
+                            }});
+                        }} else {{
+                            const fvgHdr = document.getElementById('hdr-fvg-text');
+                            if (fvgHdr) fvgHdr.innerText = 'None Active';
                         }}
 
                         // 2.5 Draw Key Open Interest Walls (Call Wall & Put Wall) + Cross / Bounce Indicator
